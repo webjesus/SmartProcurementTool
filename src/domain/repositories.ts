@@ -5,6 +5,14 @@ import type {
   MatchLink,
   TargetedRecheck
 } from "@/domain/contracts";
+import type {
+  AgentIssue,
+  AgentMemoryRecord,
+  Checkpoint,
+  ExecutionPlan,
+  ProjectRun,
+  ToolCallAudit
+} from "@/domain/orchestrator";
 import type { z } from "zod";
 
 export interface DocumentStorage {
@@ -87,6 +95,39 @@ export interface AuditRepository {
 export interface RuleRepository {
   activeFor(scope: string, scopeId?: string): Promise<Array<z.infer<typeof CompanyRuleSchema>>>;
   saveCandidate(candidate: unknown): Promise<void>;
+}
+
+export interface ProjectRunRepository {
+  savePlan(plan: ExecutionPlan): Promise<void>;
+  saveRun(run: ProjectRun): Promise<void>;
+  current(projectId: string): Promise<ProjectRun | null>;
+  appendCheckpoint(checkpoint: Checkpoint): Promise<void>;
+  checkpoints(projectRunId: string): Promise<Checkpoint[]>;
+}
+
+export interface AgentAuditRepository {
+  appendToolCall(call: ToolCallAudit): Promise<void>;
+  byProjectRun(projectRunId: string): Promise<ToolCallAudit[]>;
+}
+
+export interface AgentIssueRepository {
+  save(issue: AgentIssue): Promise<void>;
+  unresolved(projectRunId: string): Promise<AgentIssue[]>;
+}
+
+export interface AgentMemoryRepository {
+  relevant(input: {
+    projectId: string;
+    discipline?: string;
+    supplierId?: string;
+    documentFamily?: string;
+    manufacturer?: string;
+    articleNumber?: string;
+    technicalAttributes?: Record<string, string>;
+    bundleContext?: string[];
+  }): Promise<AgentMemoryRecord[]>;
+  saveCandidate(candidate: AgentMemoryRecord): Promise<void>;
+  saveApproved(record: AgentMemoryRecord): Promise<void>;
 }
 
 export interface ReviewActionRecord {

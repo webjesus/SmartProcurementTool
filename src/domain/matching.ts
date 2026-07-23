@@ -986,8 +986,13 @@ export function buildBasisRecommendations(
   });
 }
 
-export function refreshPilotAnalysis(analysis: PilotAnalysis): PilotAnalysis {
+export function refreshPilotAnalysisForPositions(
+  analysis: PilotAnalysis,
+  basisPositionIds: readonly string[]
+): PilotAnalysis {
+  const affected = new Set(basisPositionIds);
   const supplierOptions = analysis.supplierOptions.map((option) => {
+    if (!option.basisPositionIds.some((id) => affected.has(id))) return option;
     const matchingAccepted = option.matchLinkIds.some(
       (linkId) =>
         analysis.matchLinks.find((link) => link.id === linkId)?.confirmedByOperator
@@ -995,13 +1000,26 @@ export function refreshPilotAnalysis(analysis: PilotAnalysis): PilotAnalysis {
     const withoutStatus = { ...option, matchingAccepted };
     return { ...withoutStatus, status: optionStatus(withoutStatus) };
   });
+  const recalculated = new Map(
+    buildBasisRecommendations(
+      analysis.basisPositions.filter((position) => affected.has(position.id)),
+      supplierOptions
+    ).map((recommendation) => [recommendation.basisPositionId, recommendation])
+  );
   return {
     ...analysis,
     supplierOptions,
-    recommendations: buildBasisRecommendations(
-      analysis.basisPositions,
-      supplierOptions
+    recommendations: analysis.recommendations.map(
+      (recommendation) =>
+        recalculated.get(recommendation.basisPositionId) ?? recommendation
     ),
     generatedAt: new Date().toISOString()
   };
+}
+
+export function refreshPilotAnalysis(analysis: PilotAnalysis): PilotAnalysis {
+  return refreshPilotAnalysisForPositions(
+    analysis,
+    analysis.basisPositions.map((position) => position.id)
+  );
 }

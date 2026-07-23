@@ -211,6 +211,64 @@ test("real pilot matching and supplier decision survive reload", async ({ page }
   expect(runtimeFailures).toEqual([]);
 });
 
+test("real ProjectRun checkpoints survive pause and resume", async ({ page }, testInfo) => {
+  test.skip(!realPilot, "Requires LOCAL_CORPUS_ENABLED and persisted pilot runs.");
+  test.skip(testInfo.project.name !== "chromium", "One durable orchestrator flow is sufficient.");
+  const runtimeFailures = watchRuntimeFailures(page);
+
+  await page.goto("/");
+  const panel = page.locator("[data-processing-panel]");
+  await expect(panel).toBeVisible();
+  if ((await panel.getAttribute("data-run-status")) === "NOT_STARTED") {
+    await panel.getByRole("button", { name: "Verarbeitung fortsetzen" }).click();
+  }
+  await expect(panel).toHaveAttribute("data-run-status", "WAITING_FOR_OPERATOR");
+  await expect(panel.getByText("Wartet auf Entscheidung")).toBeVisible();
+  await expect(panel.getByText(/AI requests\s*0/)).toBeVisible();
+
+  const before = (await (
+    await page.request.get("/api/orchestrator")
+  ).json()) as {
+    checkpoints: unknown[];
+    toolCalls: Array<{ cost: { responseId: string | null } }>;
+    projectRun: { aiRequests: number };
+  };
+  const pilotBefore = (await (
+    await page.request.get("/api/local/corpus?view=pilot")
+  ).json()) as {
+    reviewActions: unknown[];
+    matchReviewActions: unknown[];
+    supplierDecisions: unknown[];
+  };
+
+  await panel.getByRole("button", { name: "Pausieren" }).click();
+  await expect(panel).toHaveAttribute("data-run-status", "PAUSED");
+  await page.reload();
+  await expect(panel).toHaveAttribute("data-run-status", "PAUSED");
+  await panel.getByRole("button", { name: "Verarbeitung fortsetzen" }).click();
+  await expect(panel).toHaveAttribute("data-run-status", "WAITING_FOR_OPERATOR");
+
+  const after = (await (
+    await page.request.get("/api/orchestrator")
+  ).json()) as typeof before;
+  const pilotAfter = (await (
+    await page.request.get("/api/local/corpus?view=pilot")
+  ).json()) as typeof pilotBefore;
+  expect(after.checkpoints).toHaveLength(before.checkpoints.length);
+  expect(after.projectRun.aiRequests).toBe(0);
+  expect(
+    after.toolCalls.map((call) => call.cost.responseId).filter(Boolean)
+  ).toEqual(before.toolCalls.map((call) => call.cost.responseId).filter(Boolean));
+  expect(pilotAfter.reviewActions).toEqual(pilotBefore.reviewActions);
+  expect(pilotAfter.matchReviewActions).toEqual(pilotBefore.matchReviewActions);
+  expect(pilotAfter.supplierDecisions).toEqual(pilotBefore.supplierDecisions);
+  await page.screenshot({
+    path: testInfo.outputPath("real-verarbeitung.png"),
+    fullPage: true
+  });
+  expect(runtimeFailures).toEqual([]);
+});
+
 test("all primary pages render at desktop and mobile widths", async ({ page }, testInfo) => {
   const runtimeFailures = watchRuntimeFailures(page);
   if (testInfo.project.name === "chromium") {

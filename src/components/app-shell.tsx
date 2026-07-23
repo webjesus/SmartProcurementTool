@@ -14,6 +14,7 @@ import {
   Settings2
 } from "lucide-react";
 import { project } from "@/lib/demo-data";
+import { ProcessingPanel } from "@/components/processing-panel";
 
 const nav = [
   { href: "/", label: "Projektübersicht", icon: LayoutDashboard },
@@ -75,7 +76,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <button className="avatar" aria-label="Operatorprofil">NK</button>
           </div>
         </header>
-        <div className="page-content">{children}</div>
+        <div className="page-content">
+          <ProcessingPanel />
+          {children}
+        </div>
       </main>
     </div>
   );

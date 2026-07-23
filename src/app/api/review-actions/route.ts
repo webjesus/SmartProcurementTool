@@ -6,7 +6,10 @@ import {
   SupplierDecisionSchema,
   type OfferLine
 } from "@/domain/contracts";
-import { composeMatchLink, refreshPilotAnalysis } from "@/domain/matching";
+import {
+  composeMatchLink,
+  refreshPilotAnalysisForPositions
+} from "@/domain/matching";
 import { applyOfferLineReview, type ReviewAction } from "@/domain/review";
 import {
   LocalPilotPersistence,
@@ -173,7 +176,10 @@ export async function POST(request: Request) {
         )
       }));
     }
-    analysis = refreshPilotAnalysis(analysis);
+    analysis = refreshPilotAnalysisForPositions(
+      analysis,
+      action.basisPositionIds
+    );
     const auditEvent = {
       id: action.id,
       issueId: `match:${action.basisPositionIds.join(",")}`,
