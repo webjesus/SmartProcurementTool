@@ -1,0 +1,29 @@
+# Confidential local corpus and processing artifacts
+/pdffirma/
+/.data/
+/storage/
+/tmp/
+/local-data/
+*.local.db
+*.local.sqlite
+/docs/CORPUS_REPORT.local.md
+
+# Secrets
+.env
+.env.local
+.env.*.local
+
+# Dependencies and builds
+node_modules/
+.next/
+out/
+coverage/
+playwright-report/
+test-results/
+*.tsbuildinfo
+
+# Logs and editor files
+*.log
+.DS_Store
+.idea/
+.vscode/

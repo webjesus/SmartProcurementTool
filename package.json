@@ -1,0 +1,57 @@
+{
+  "name": "smart-procurement-tool",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Evidence-first procurement document analysis and operator review.",
+  "scripts": {
+    "dev": "concurrently -k -n WEB,WORKER -c blue,magenta \"npm:dev:web\" \"npm:dev:worker\"",
+    "dev:web": "next dev",
+    "dev:worker": "tsx watch src/worker/index.ts",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "tsx scripts/run-e2e.ts",
+    "corpus:scan": "tsx scripts/corpus-scan.ts",
+    "corpus:process": "tsx scripts/corpus-process.ts",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate"
+  },
+  "dependencies": {
+    "drizzle-orm": "0.45.2",
+    "exceljs": "4.4.0",
+    "lucide-react": "0.468.0",
+    "next": "16.2.11",
+    "openai": "6.48.0",
+    "pdfjs-dist": "6.1.200",
+    "postgres": "3.4.7",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "sharp": "0.35.3",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.55.1",
+    "@types/node": "24.5.2",
+    "@types/react": "19.1.16",
+    "@types/react-dom": "19.1.9",
+    "canvas": "^3.2.3",
+    "concurrently": "10.0.3",
+    "drizzle-kit": "0.31.10",
+    "eslint": "9.36.0",
+    "eslint-config-next": "16.2.11",
+    "prettier": "3.6.2",
+    "tsx": "4.20.5",
+    "typescript": "5.9.2",
+    "vitest": "4.1.10"
+  },
+  "overrides": {
+    "esbuild": "0.25.12",
+    "postcss": "8.5.22",
+    "shell-quote": "1.10.0",
+    "uuid": "11.1.1"
+  }
+}
