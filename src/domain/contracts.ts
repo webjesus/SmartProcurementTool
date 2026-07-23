@@ -357,6 +357,14 @@ export const RecommendationStatusSchema = z.enum([
 ]);
 export type RecommendationStatus = z.infer<typeof RecommendationStatusSchema>;
 
+export const OfferAvailabilitySchema = z.enum([
+  "PRESENT",
+  "EXPLICIT_NO_OFFER",
+  "COVERED_WITHOUT_OFFER",
+  "NOT_COVERED"
+]);
+export type OfferAvailability = z.infer<typeof OfferAvailabilitySchema>;
+
 export const SupplierOptionSchema = z.object({
   id: z.string(),
   basisPositionIds: z.array(z.string()).min(1),
@@ -367,6 +375,7 @@ export const SupplierOptionSchema = z.object({
   primaryPrice: z.number().nullable(),
   mandatoryComponentPrices: z.array(z.number()),
   optionalPrices: z.array(z.number()),
+  pricedTotal: z.number().nullable(),
   comparableTotal: z.number().nullable(),
   quantity: z.number().nullable(),
   unit: z.string().nullable(),
@@ -383,6 +392,9 @@ export const SupplierOptionSchema = z.object({
   evidenceSufficient: z.boolean(),
   extractionValidated: z.boolean(),
   matchingAccepted: z.boolean(),
+  matchingReliable: z.boolean(),
+  offerAvailability: OfferAvailabilitySchema,
+  reasons: z.array(z.string()),
   status: RecommendationStatusSchema
 });
 export type SupplierOption = z.infer<typeof SupplierOptionSchema>;

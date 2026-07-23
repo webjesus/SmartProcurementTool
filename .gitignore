@@ -8,6 +8,7 @@
 *.local.sqlite
 /docs/CORPUS_REPORT.local.md
 /docs/HISTORICAL_EVALUATION.local.md
+/docs/PILOT_COMPARISON_REVIEW.local.md
 
 # Secrets
 .env

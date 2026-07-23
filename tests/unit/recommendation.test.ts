@@ -11,7 +11,7 @@ const valid = {
   technicalDeviation: false,
   optionalSeparated: true,
   evidenceSufficient: true,
-  hasOffer: true
+  offerAvailability: "PRESENT" as const
 };
 
 describe("recommendations", () => {
@@ -27,6 +27,11 @@ describe("recommendations", () => {
     expect(recommendationStatus({ ...valid, technicalDeviation: true })).toBe(
       "TECHNICAL_DEVIATION"
     );
-    expect(recommendationStatus({ ...valid, hasOffer: false })).toBe("NO_OFFER");
+    expect(
+      recommendationStatus({ ...valid, offerAvailability: "EXPLICIT_NO_OFFER" })
+    ).toBe("NO_OFFER");
+    expect(
+      recommendationStatus({ ...valid, offerAvailability: "NOT_COVERED" })
+    ).toBe("MATCHING_UNCLEAR");
   });
 });

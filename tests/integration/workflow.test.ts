@@ -24,7 +24,7 @@ describe("synthetic procurement workflow", () => {
         technicalDeviation: false,
         optionalSeparated: true,
         evidenceSufficient: true,
-        hasOffer: true
+        offerAvailability: "PRESENT"
       })
     ).toBe("CLEAR_RECOMMENDATION");
   });

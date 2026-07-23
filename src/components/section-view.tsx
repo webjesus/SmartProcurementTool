@@ -964,8 +964,26 @@ function pilotSourceHref(
 
 function optionDisplay(option: SupplierOption | undefined) {
   if (!option) return "Nicht zugeordnet";
-  if (option.comparableTotal === null) return option.status.replaceAll("_", " ");
+  if (option.comparableTotal === null) {
+    return option.pricedTotal === null
+      ? option.status.replaceAll("_", " ")
+      : `${formatNumber(option.pricedTotal)} € Material · ${option.status.replaceAll("_", " ")}`;
+  }
   return `${formatNumber(option.comparableTotal)} €`;
+}
+
+function optionPriceBreakdown(option: SupplierOption): string {
+  const mandatory = option.mandatoryComponentPrices.reduce(
+    (sum, value) => sum + value,
+    0
+  );
+  const optional = option.optionalPrices.reduce((sum, value) => sum + value, 0);
+  return [
+    `Primär ${option.primaryPrice === null ? "—" : `${formatNumber(option.primaryPrice)} €`}`,
+    `Pflicht ${option.mandatoryComponentPrices.length ? `${formatNumber(mandatory)} €` : "—"}`,
+    `Optional ${option.optionalPrices.length ? `${formatNumber(optional)} €` : "—"}`,
+    `Vergleich ${option.comparableTotal === null ? "nicht freigegeben" : `${formatNumber(option.comparableTotal)} €`}`
+  ].join(" · ");
 }
 
 function RealMatching({
@@ -1015,6 +1033,17 @@ function RealMatching({
   const selected =
     analysis.matchLinks.find((link) => link.id === selectedLinkId) ??
     analysis.matchLinks[0];
+  const selectedSupplierDocumentId = selected
+    ? lineIndex.get(selected.offerLineIds[0])?.run.document.id
+    : undefined;
+  const selectedOption = selected
+    ? analysis.supplierOptions.find(
+        (option) =>
+          option.basisPositionIds.some((id) =>
+            selected.basisPositionIds.includes(id)
+          ) && option.supplierDocumentId === selectedSupplierDocumentId
+      )
+    : undefined;
 
   async function submit(
     action: MatchReviewAction["action"],
@@ -1088,6 +1117,12 @@ function RealMatching({
         {selected ? <aside className="panel position-inspector" data-matching-inspector>
           <span className="eyebrow">MANUELLE KONTROLLE</span>
           <h2>{basisIndex.get(selected.basisPositionIds[0])?.positionNumber}</h2>
+          {selectedOption ? <>
+            <StatusBadge>{selectedOption.status}</StatusBadge>
+            <ul className="option-reasons">
+              {selectedOption.reasons.map((reason) => <li key={reason}>{reason}</li>)}
+            </ul>
+          </> : null}
           <label className="comment-field"><span>Andere Basis-Position</span><select value={basisChoice} onChange={(event) => setBasisChoice(event.target.value)}>{analysis.basisPositions.map((position) => <option key={position.id} value={position.id}>{position.positionNumber} · {position.description}</option>)}</select></label>
           <label className="comment-field"><span>Aktion</span><select value={manualAction} onChange={(event) => setManualAction(event.target.value as MatchReviewAction["action"])}>
             <option value="CHOOSE_BASIS">Andere Basis-Position wählen</option>
@@ -1149,6 +1184,7 @@ function RealComparison({
   const detailOptions = analysis.supplierOptions.filter((option) =>
     option.basisPositionIds.includes(detail.id)
   );
+  const detailRecommendation = recommendationIndex.get(detail.id);
   const decision = pilot.supplierDecisions.find(
     (item) => item.basisPositionId === detail.id
   );
@@ -1210,19 +1246,49 @@ function RealComparison({
           <div className="requirement-grid"><div><span>Menge</span><strong>{detail.quantity ?? "—"} {detail.unit ?? ""}</strong></div><div><span>Validation</span><strong>{detail.verificationStatus ?? "NEEDS_REVIEW"}</strong></div></div>
           <h3>Lieferantenoptionen</h3>
           {detailOptions.map((option) => {
-            const firstLine = lineIndex.get(option.matchedOfferLineIds[0]);
-            const evidence = firstLine?.line.evidence[0];
-            const href = evidence ? pilotSourceHref(pilot, evidence.documentId, evidence.pageNumber) : null;
+            const evidenceLinks = Array.from(
+              new Map(
+                option.matchedOfferLineIds.flatMap((lineId) => {
+                  const item = lineIndex.get(lineId);
+                  const evidence = item?.line.evidence[0];
+                  const href = evidence
+                    ? pilotSourceHref(
+                        pilot,
+                        evidence.documentId,
+                        evidence.pageNumber
+                      )
+                    : null;
+                  return href && evidence
+                    ? [[`${evidence.documentId}:${evidence.pageNumber}`, {
+                        href,
+                        pageNumber: evidence.pageNumber
+                      }] as const]
+                    : [];
+                })
+              ).values()
+            );
             return <div className="supplier-option" key={option.id}>
               <span>{option.supplierLabel}</span><strong>{optionDisplay(option)}</strong>
+              <small>{optionPriceBreakdown(option)}</small>
               <small>{option.scopeOfSupply.length} Scope-Zeilen · Pflicht {option.mandatoryComponentPrices.length} · Optional {option.optionalPrices.length}</small>
-              <small>{option.status.replaceAll("_", " ")}{option.validationIssueIds.length ? ` · ${option.validationIssueIds.length} Issues` : ""}</small>
-              {href ? <a href={href} target="_blank" rel="noreferrer">Zur Quelle Supplier</a> : null}
+              <ul className="option-reasons">
+                {option.reasons.map((reason) => <li key={reason}>{reason}</li>)}
+              </ul>
+              <div className="source-links">
+                {evidenceLinks.map((evidence) => <a key={evidence.href} href={evidence.href} target="_blank" rel="noreferrer">Supplier S. {evidence.pageNumber}</a>)}
+              </div>
               <Button kind="ghost" onClick={() => decide(option.supplierDocumentId, "SELECTED")}>{decision?.supplierDocumentId === option.supplierDocumentId ? <Check size={15} /> : null} Supplier auswählen</Button>
             </div>;
           })}
           {detail.evidence[0] ? <a className="source-button" href={pilotSourceHref(pilot, detail.evidence[0].documentId, detail.evidence[0].pageNumber) ?? "#"} target="_blank" rel="noreferrer"><Eye size={16} /> Zur Quelle Basis</a> : null}
-          <div className="inspector-status"><StatusBadge>{recommendationIndex.get(detail.id)?.status ?? "NO_OFFER"}</StatusBadge><p>{recommendationIndex.get(detail.id)?.reasons.join(" · ") || "Keine vergleichbare Option."}</p></div>
+          <div className="inspector-status">
+            <StatusBadge>{detailRecommendation?.status ?? "NO_OFFER"}</StatusBadge>
+            {detailRecommendation?.reasons.length ? (
+              <ul className="option-reasons">
+                {detailRecommendation.reasons.map((reason) => <li key={reason}>{reason}</li>)}
+              </ul>
+            ) : <p>Keine vergleichbare Option.</p>}
+          </div>
           <label className="comment-field"><span>Entscheidungskommentar</span><textarea value={comment} onChange={(event) => setComment(event.target.value)} /></label>
           <Button kind="secondary" onClick={() => decide(null, "DEFERRED")}>Entscheidung zurückstellen</Button>
         </aside>

@@ -297,6 +297,9 @@ tbody tr:hover { background: #fafcff; }
 .supplier-option span { font-size: 10px; }
 .supplier-option strong { font-size: 11px; }
 .supplier-option small { grid-column: 1 / -1; color: var(--success); font-size: 8px; margin-top: 4px; }
+.option-reasons { grid-column: 1 / -1; margin: 8px 0; padding-left: 16px; color: var(--muted); font-size: 9px; line-height: 1.45; }
+.option-reasons li + li { margin-top: 3px; }
+.supplier-option .source-links { grid-column: 1 / -1; margin: 4px 0 8px; }
 .inspector-status { margin: 17px 0; padding: 12px; background: #f8fafc; border: 1px solid var(--border); border-radius: 4px; }
 .inspector-status p { color: var(--muted); font-size: 9px; line-height: 1.45; margin: 8px 0 0; }
 

@@ -99,13 +99,20 @@ async function buildPersistedAnalysis(root: string): Promise<void> {
       run.document.id === basisSelector &&
       run.result.metadata.promptVersion === BASIS_PROMPT_VERSION
   );
-  const supplierRuns = state.runs.filter(
-    (run) =>
-      isMatchingSourceDocumentType(run.document.documentType) &&
-      run.document.documentType === "SUPPLIER_OFFER" &&
-      supplierSelectors.includes(run.document.id) &&
-      run.result.metadata.promptVersion === PROMPT_VERSION
-  );
+  const supplierRuns = state.runs
+    .filter(
+      (run) =>
+        isMatchingSourceDocumentType(run.document.documentType) &&
+        run.document.documentType === "SUPPLIER_OFFER" &&
+        supplierSelectors.includes(run.document.id) &&
+        run.result.metadata.promptVersion === PROMPT_VERSION
+    )
+    .sort(
+      (left, right) =>
+        supplierSelectors.indexOf(left.document.id) -
+          supplierSelectors.indexOf(right.document.id) ||
+        left.document.pageNumber - right.document.pageNumber
+    );
   const basisPositions = Array.from(
     new Map(
       basisRuns
