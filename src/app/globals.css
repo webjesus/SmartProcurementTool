@@ -260,7 +260,7 @@ tbody tr:hover { background: #fafcff; }
 .validation-list > div.warn { color: var(--warning); }
 .comment-field { display: block; }
 .comment-field > span { display: block; font-size: 9px; font-weight: 700; color: var(--muted); margin-bottom: 5px; text-transform: uppercase; }
-.comment-field textarea, .comment-field input { width: 100%; border: 1px solid var(--border-strong); border-radius: 4px; padding: 9px; outline: none; font-size: 11px; }
+.comment-field textarea, .comment-field input, .comment-field select { width: 100%; border: 1px solid var(--border-strong); border-radius: 4px; padding: 9px; outline: none; font-size: 11px; background: var(--surface); color: var(--text); }
 .comment-field textarea { min-height: 62px; resize: vertical; }
 .review-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
 .audit-note { color: var(--muted); font-size: 9px; display: flex; align-items: center; gap: 5px; margin-top: 10px; }
@@ -276,6 +276,9 @@ tbody tr:hover { background: #fafcff; }
 .score i { display: block; height: 100%; background: #dce6f7; }
 .score span { position: absolute; inset: 0; display: grid; place-items: center; font-size: 9px; font-weight: 800; color: var(--blue); }
 .comparison-layout { display: grid; grid-template-columns: minmax(0, 1fr) 285px; gap: 12px; align-items: start; }
+.matching-pilot-layout { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 12px; align-items: start; }
+.source-links { display: grid; gap: 4px; min-width: 110px; }
+.source-links a, .supplier-option a { color: var(--blue); font-size: 9px; font-weight: 700; text-decoration: underline; text-underline-offset: 2px; }
 .filter-tabs { display: flex; gap: 5px; overflow-x: auto; padding-bottom: 9px; }
 .filter-tabs button { white-space: nowrap; height: 30px; padding: 0 10px; border: 1px solid var(--border); background: #fff; border-radius: 3px; color: var(--muted); font-size: 9px; cursor: pointer; }
 .filter-tabs button.active { color: var(--blue); border-color: var(--blue); background: var(--blue-soft); font-weight: 700; }
@@ -343,7 +346,7 @@ tbody tr:hover { background: #fafcff; }
   .main { margin-left: 0; }
   .topbar { top: 0; }
   .metrics-grid { grid-template-columns: repeat(2, 1fr); }
-  .content-grid, .comparison-layout, .export-layout { grid-template-columns: 1fr; }
+  .content-grid, .comparison-layout, .matching-pilot-layout, .export-layout { grid-template-columns: 1fr; }
   .position-inspector { position: static; }
   .review-layout { grid-template-columns: 1fr; height: auto; }
   .issue-queue { max-height: 260px; }

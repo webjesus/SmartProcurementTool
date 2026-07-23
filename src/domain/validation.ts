@@ -134,6 +134,44 @@ export function validateOfferLine(
     lineId: line.id,
     evidenceIds: line.evidence.map((item) => item.id)
   };
+  const hasPrintedPrice =
+    line.moneyCandidates.some((candidate) => candidate.amount !== null) ||
+    line.interpretedUnitPrice !== null ||
+    line.interpretedTotalPrice !== null;
+
+  if (line.completenessStatus === "PRICED_OFFER" && !hasPrintedPrice) {
+    issues.push(
+      issue(
+        "PRICE_BASIS_UNCLEAR",
+        "BLOCKING",
+        "Die Zeile wurde als bepreist klassifiziert, enthält aber keinen gedruckten Preis.",
+        {
+          ...issueContext,
+          field: "completenessStatus",
+          affectedFields: ["completenessStatus", "moneyCandidates"]
+        }
+      )
+    );
+  }
+  if (
+    ["OFFER_WITHOUT_PRICE", "UNPRICED_TEMPLATE", "EMPTY_LINE", "NOT_OFFERED"].includes(
+      line.completenessStatus ?? ""
+    ) &&
+    hasPrintedPrice
+  ) {
+    issues.push(
+      issue(
+        "PRICE_COLUMN_CONFLICT",
+        "BLOCKING",
+        "Der Vollständigkeitsstatus widerspricht einem gedruckten Preis.",
+        {
+          ...issueContext,
+          field: "completenessStatus",
+          affectedFields: ["completenessStatus", "moneyCandidates"]
+        }
+      )
+    );
+  }
 
   for (const candidate of line.moneyCandidates) {
     if (candidate.amount !== null) {

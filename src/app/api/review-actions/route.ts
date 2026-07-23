@@ -1,7 +1,12 @@
 import path from "node:path";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import type { OfferLine } from "@/domain/contracts";
+import {
+  MatchReviewActionSchema,
+  SupplierDecisionSchema,
+  type OfferLine
+} from "@/domain/contracts";
+import { composeMatchLink, refreshPilotAnalysis } from "@/domain/matching";
 import { applyOfferLineReview, type ReviewAction } from "@/domain/review";
 import {
   LocalPilotPersistence,
@@ -22,6 +27,16 @@ const ReviewActionInput = z.object({
   reason: z.string().min(1),
   comment: z.string().optional().default("")
 });
+
+const MatchActionInput = MatchReviewActionSchema.omit({
+  id: true,
+  timestamp: true
+}).extend({ kind: z.literal("MATCH") });
+
+const SupplierDecisionInput = SupplierDecisionSchema.omit({
+  id: true,
+  timestamp: true
+}).extend({ kind: z.literal("DECISION") });
 
 type StoredReviewAction = z.infer<typeof ReviewActionInput> & {
   id: string;
@@ -71,7 +86,164 @@ function replayActions(
 }
 
 export async function POST(request: Request) {
-  const parsed = ReviewActionInput.safeParse(await request.json());
+  const body = await request.json();
+  if (process.env.LOCAL_CORPUS_ENABLED === "true" && body?.kind === "MATCH") {
+    const parsedMatch = MatchActionInput.safeParse(body);
+    if (!parsedMatch.success) {
+      return NextResponse.json(
+        { error: "INVALID_MATCH_ACTION", details: parsedMatch.error.flatten() },
+        { status: 400 }
+      );
+    }
+    const persistence = new LocalPilotPersistence(
+      path.resolve(/*turbopackIgnore: true*/ process.cwd(), ".data"),
+      true
+    );
+    const state = await persistence.read();
+    if (!state.analysis) {
+      return NextResponse.json({ error: "PILOT_ANALYSIS_NOT_FOUND" }, { status: 404 });
+    }
+    const timestamp = new Date().toISOString();
+    const action = MatchReviewActionSchema.parse({
+      ...parsedMatch.data,
+      id: crypto.randomUUID(),
+      timestamp
+    });
+    let analysis = structuredClone(state.analysis);
+    const related = analysis.matchLinks.filter(
+      (link) =>
+        link.basisPositionIds.some((id) => action.basisPositionIds.includes(id)) &&
+        link.offerLineIds.some((id) => action.offerLineIds.includes(id))
+    );
+    if (
+      ["CONFIRM_MATCH", "CHOOSE_BASIS", "COMBINE_LINES", "CONFIRM_REPLACEMENT"].includes(
+        action.action
+      )
+    ) {
+      if (related.length === 0) {
+        analysis.matchLinks.push(
+          composeMatchLink({
+            basisPositionIds: action.basisPositionIds,
+            offerLineIds: action.offerLineIds,
+            status: action.action === "CONFIRM_REPLACEMENT" ? "REPLACEMENT" : "EXACT",
+            score: 1,
+            reasons: ["Operatorentscheidung"],
+            confirmedByOperator: true
+          })
+        );
+      } else {
+        analysis.matchLinks = analysis.matchLinks.map((link) =>
+          related.some((item) => item.id === link.id)
+            ? {
+                ...link,
+                basisPositionIds:
+                  action.action === "CHOOSE_BASIS"
+                    ? action.basisPositionIds
+                    : link.basisPositionIds,
+                offerLineIds:
+                  action.action === "COMBINE_LINES"
+                    ? Array.from(new Set([...link.offerLineIds, ...action.offerLineIds]))
+                    : link.offerLineIds,
+                status:
+                  action.action === "CONFIRM_REPLACEMENT" ? "REPLACEMENT" : link.status,
+                confirmedByOperator: true,
+                reasons: Array.from(new Set([...link.reasons, "Operator bestätigt"]))
+              }
+            : link
+        );
+      }
+    }
+    if (["INCLUDE_REQUIRED_COMPONENT", "INCLUDE_OPTIONAL"].includes(action.action)) {
+      analysis.matchLinks = analysis.matchLinks.map((link) =>
+        link.basisPositionIds.some((id) => action.basisPositionIds.includes(id))
+          ? {
+              ...link,
+              offerLineIds: Array.from(new Set([...link.offerLineIds, ...action.offerLineIds])),
+              confirmedByOperator: true,
+              reasons: Array.from(new Set([...link.reasons, "Komponente operatorseitig einbezogen"]))
+            }
+          : link
+      );
+    }
+    if (action.action === "EXCLUDE_OPTIONAL") {
+      analysis.matchLinks = analysis.matchLinks.map((link) => ({
+        ...link,
+        offerLineIds: link.offerLineIds.filter(
+          (id) => !action.offerLineIds.includes(id)
+        )
+      }));
+    }
+    analysis = refreshPilotAnalysis(analysis);
+    const auditEvent = {
+      id: action.id,
+      issueId: `match:${action.basisPositionIds.join(",")}`,
+      action: action.action,
+      previousValue: related.map((link) => link.id),
+      newValue: action.offerLineIds,
+      operator: action.operator,
+      timestamp,
+      reason: "Manual matching control",
+      comment: action.comment,
+      entityType: "MatchLink",
+      entityId: action.basisPositionIds[0] ?? analysis.id
+    };
+    await persistence.appendMatchReview(action, auditEvent, analysis);
+    return NextResponse.json(
+      { matchReviewAction: action, auditEvent, analysis, persistence: "LOCAL_DURABLE" },
+      { status: 201, headers: { "x-spt-persistence": "local-durable" } }
+    );
+  }
+
+  if (process.env.LOCAL_CORPUS_ENABLED === "true" && body?.kind === "DECISION") {
+    const parsedDecision = SupplierDecisionInput.safeParse(body);
+    if (!parsedDecision.success) {
+      return NextResponse.json(
+        { error: "INVALID_SUPPLIER_DECISION", details: parsedDecision.error.flatten() },
+        { status: 400 }
+      );
+    }
+    const persistence = new LocalPilotPersistence(
+      path.resolve(/*turbopackIgnore: true*/ process.cwd(), ".data"),
+      true
+    );
+    const state = await persistence.read();
+    if (
+      !state.analysis?.basisPositions.some(
+        (position) => position.id === parsedDecision.data.basisPositionId
+      )
+    ) {
+      return NextResponse.json({ error: "BASIS_POSITION_NOT_FOUND" }, { status: 404 });
+    }
+    const timestamp = new Date().toISOString();
+    const decision = SupplierDecisionSchema.parse({
+      ...parsedDecision.data,
+      id: crypto.randomUUID(),
+      timestamp
+    });
+    const auditEvent = {
+      id: decision.id,
+      issueId: `decision:${decision.basisPositionId}`,
+      action: decision.status === "SELECTED" ? "DECIDE" : "DEFER",
+      previousValue:
+        state.supplierDecisions.find(
+          (item) => item.basisPositionId === decision.basisPositionId
+        ) ?? null,
+      newValue: decision,
+      operator: decision.operator,
+      timestamp,
+      reason: "Supplier decision",
+      comment: decision.comment,
+      entityType: "SupplierDecision",
+      entityId: decision.basisPositionId
+    };
+    await persistence.appendSupplierDecision(decision, auditEvent);
+    return NextResponse.json(
+      { supplierDecision: decision, auditEvent, persistence: "LOCAL_DURABLE" },
+      { status: 201, headers: { "x-spt-persistence": "local-durable" } }
+    );
+  }
+
+  const parsed = ReviewActionInput.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(
       { error: "INVALID_REVIEW_ACTION", details: parsed.error.flatten() },

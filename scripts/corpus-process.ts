@@ -7,7 +7,23 @@ import {
   type AiRunMetadata,
   type ExtractionResult
 } from "../src/ai/openai-extraction-adapter";
-import type { EvidenceReference, ExtractionEnvelope, OfferLine } from "../src/domain/contracts";
+import {
+  BASIS_PROMPT_VERSION,
+  type PilotAnalysis,
+  PROMPT_VERSION,
+  type Discipline,
+  type DocumentType,
+  type EvidenceReference,
+  type ExtractionEnvelope,
+  type OfferLine
+} from "../src/domain/contracts";
+import {
+  buildBasisRecommendations,
+  buildSupplierOptions,
+  isMatchingSourceDocumentType,
+  proposeMatches,
+  type OfferLineContext
+} from "../src/domain/matching";
 import {
   canonicalizeExtractionEvidence,
   canMachineValidate,
@@ -40,10 +56,161 @@ const args = new Map(
 );
 const dryRun = args.has("--dry-run");
 const recheck = args.has("--recheck");
+const nativeTextOnly = args.has("--native-text-only");
+const includeDocumentMetadata = !args.has("--no-metadata");
+const analyze = args.has("--analyze");
 const documentSelector = args.get("--document");
 const pageSelector = Number(args.get("--page") ?? 0);
 const requestedLimit = Number(args.get("--limit") ?? process.env.SPT_MAX_PAGES_PER_RUN ?? 3);
 const limit = Math.min(Math.max(requestedLimit, 1), 3);
+
+function comparePosition(left: string, right: string): number {
+  const a = left.split(".").map(Number);
+  const b = right.split(".").map(Number);
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    const delta = (a[index] ?? 0) - (b[index] ?? 0);
+    if (delta !== 0) return delta;
+  }
+  return 0;
+}
+
+async function buildPersistedAnalysis(root: string): Promise<void> {
+  if (process.env.LOCAL_CORPUS_ENABLED !== "true") {
+    throw new Error("Set LOCAL_CORPUS_ENABLED=true for local pilot analysis.");
+  }
+  const basisSelector = args.get("--basis-document");
+  const supplierSelectors = (args.get("--supplier-documents") ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const basisFrom = args.get("--basis-from");
+  const basisTo = args.get("--basis-to");
+  if (!basisSelector || supplierSelectors.length < 2 || !basisFrom || !basisTo) {
+    throw new Error(
+      "--analyze requires --basis-document, two --supplier-documents IDs, --basis-from and --basis-to."
+    );
+  }
+  const persistence = new LocalPilotPersistence(path.resolve(root, ".data"), true);
+  const state = await persistence.read();
+  const basisRuns = state.runs.filter(
+    (run) =>
+      isMatchingSourceDocumentType(run.document.documentType) &&
+      run.document.documentType === "BASIS_LV" &&
+      run.document.id === basisSelector &&
+      run.result.metadata.promptVersion === BASIS_PROMPT_VERSION
+  );
+  const supplierRuns = state.runs.filter(
+    (run) =>
+      isMatchingSourceDocumentType(run.document.documentType) &&
+      run.document.documentType === "SUPPLIER_OFFER" &&
+      supplierSelectors.includes(run.document.id) &&
+      run.result.metadata.promptVersion === PROMPT_VERSION
+  );
+  const basisPositions = Array.from(
+    new Map(
+      basisRuns
+        .flatMap((run) => run.result.envelope.extraction.basisPositions)
+        .filter((position) => !position.heading)
+        .filter(
+          (position) =>
+            comparePosition(position.positionNumber, basisFrom) >= 0 &&
+            comparePosition(position.positionNumber, basisTo) <= 0
+        )
+        .sort((left, right) =>
+          comparePosition(left.positionNumber, right.positionNumber)
+        )
+        .map((position) => [position.positionNumber, position])
+    ).values()
+  );
+  if (basisPositions.length === 0 || basisPositions.length > 20) {
+    throw new Error(
+      `Selected Basis range produced ${basisPositions.length} positions; expected 1..20.`
+    );
+  }
+  const offers: OfferLineContext[] = supplierRuns.flatMap((run) =>
+    run.result.envelope.extraction.offerGroups.flatMap((group) =>
+      group.lines.map((line) => ({
+        documentId: run.document.id,
+        documentLabel: run.document.relativePath,
+        line,
+        blockingIssueIds: run.validationIssues
+          .filter(
+            (issue) => issue.lineId === line.id && issue.severity === "BLOCKING"
+          )
+          .map((issue) => issue.id)
+      }))
+    )
+  );
+  let matchLinks = proposeMatches(basisPositions, offers);
+  matchLinks = matchLinks.map((link) => ({
+    ...link,
+    confirmedByOperator: state.matchReviewActions.some(
+      (action) =>
+        action.action === "CONFIRM_MATCH" &&
+        action.basisPositionIds.every((id) => link.basisPositionIds.includes(id)) &&
+        action.offerLineIds.every((id) => link.offerLineIds.includes(id))
+    )
+  }));
+  const supplierOptions = buildSupplierOptions({
+    basisPositions,
+    offers,
+    links: matchLinks
+  });
+  const basisDocument = basisRuns[0]?.document;
+  if (!basisDocument) throw new Error("No compact Basis runs found for the selected document.");
+  const supplierDocuments = supplierSelectors.map((documentId) => {
+    const runs = supplierRuns.filter((run) => run.document.id === documentId);
+    if (runs.length === 0) {
+      throw new Error(`No compact supplier runs found for ${documentId}.`);
+    }
+    return {
+      id: documentId,
+      label: runs[0].document.relativePath,
+      pages: Array.from(new Set(runs.map((run) => run.document.pageNumber))).sort(
+        (left, right) => left - right
+      )
+    };
+  });
+  const generatedAt = new Date().toISOString();
+  const analysis: PilotAnalysis = {
+    id: `analysis_${createHash("sha256")
+      .update(
+        JSON.stringify({
+          basisSelector,
+          supplierSelectors,
+          basisFrom,
+          basisTo,
+          runIds: [...basisRuns, ...supplierRuns].map((run) => run.id)
+        })
+      )
+      .digest("hex")
+      .slice(0, 18)}`,
+    basisDocumentId: basisSelector,
+    basisDocumentLabel: basisDocument.relativePath,
+    basisPages: Array.from(new Set(basisRuns.map((run) => run.document.pageNumber))).sort(
+      (left, right) => left - right
+    ),
+    basisPositionFrom: basisFrom,
+    basisPositionTo: basisTo,
+    supplierDocuments,
+    basisPositions,
+    matchLinks,
+    supplierOptions,
+    recommendations: buildBasisRecommendations(basisPositions, supplierOptions),
+    generatedAt
+  };
+  await persistence.saveAnalysis(analysis);
+  const statuses = analysis.recommendations.reduce<Record<string, number>>(
+    (counts, recommendation) => {
+      counts[recommendation.status] = (counts[recommendation.status] ?? 0) + 1;
+      return counts;
+    },
+    {}
+  );
+  process.stdout.write(
+    `ANALYSIS: basis ${basisPositions.length}; supplier lines ${offers.length}; links ${matchLinks.length}; options ${supplierOptions.length}; statuses ${JSON.stringify(statuses)}; persisted ${analysis.id}.\n`
+  );
+}
 
 async function readLocalEnv(): Promise<Record<string, string>> {
   const content = await readFile(path.resolve(process.cwd(), ".env.local"), "utf8");
@@ -131,8 +298,9 @@ function findLine(run: PersistedPilotRun, lineId?: string): OfferLine | undefine
     .find((line) => !lineId || line.id === lineId);
 }
 
-function requestMode(mode: string): string {
+function requestMode(mode: string, textOnly = false): string {
   if (mode === "DIGITAL") return "native text items only";
+  if (mode === "HYBRID" && textOnly) return "native text items only (embedded graphics omitted)";
   if (mode === "HYBRID") return "native text items + high-detail page render";
   return "high-detail page render only";
 }
@@ -148,6 +316,12 @@ function updateVerificationStatuses(
         ? "MACHINE_VALIDATED"
         : "REVIEW_REQUIRED";
     }
+  }
+  for (const position of envelope.extraction.basisPositions) {
+    const positionIssues = issues.filter((item) => item.lineId === position.id);
+    position.verificationStatus = positionIssues.some((item) => item.severity === "BLOCKING")
+      ? "REVIEW_REQUIRED"
+      : "MACHINE_VALIDATED";
   }
 }
 
@@ -233,6 +407,10 @@ async function runRecheck(
 
 async function main() {
   const root = process.cwd();
+  if (analyze) {
+    await buildPersistedAnalysis(root);
+    return;
+  }
   const manifest = JSON.parse(
     await readFile(path.resolve(root, ".data", "corpus-manifest.local.json"), "utf8")
   ) as Manifest;
@@ -265,7 +443,7 @@ async function main() {
       );
       const parsed = await parser.extractPage(document.id, file, page.pageNumber);
       const image =
-        page.mode === "DIGITAL"
+        page.mode === "DIGITAL" || (page.mode === "HYBRID" && nativeTextOnly)
           ? undefined
           : await parser.renderPage(file, page.pageNumber, 1.5);
       const textBytes =
@@ -283,7 +461,7 @@ async function main() {
               "utf8"
             );
       process.stdout.write(
-        `PLAN: model ${process.env.OPENAI_EXTRACTION_MODEL ?? "OPENAI_EXTRACTION_MODEL"}; document ${document.relativePath}; page ${page.pageNumber}; ${requestMode(page.mode)}; estimated ${textBytes + (image?.byteLength ?? 0)} bytes (${parsed.textItems.length} text items, ${image?.byteLength ?? 0} image bytes).\n`
+        `PLAN: model ${process.env.OPENAI_EXTRACTION_MODEL ?? "OPENAI_EXTRACTION_MODEL"}; document ${document.relativePath}; page ${page.pageNumber}; ${requestMode(page.mode, nativeTextOnly)}; metadata ${includeDocumentMetadata ? "included" : "omitted"}; estimated ${textBytes + (image?.byteLength ?? 0)} bytes (${parsed.textItems.length} text items, ${image?.byteLength ?? 0} image bytes).\n`
       );
     }
     process.stdout.write("OpenAI used: no. No commercial text or image left this device.\n");
@@ -336,8 +514,8 @@ async function main() {
         run.result.metadata.modelId === process.env.OPENAI_EXTRACTION_MODEL &&
         run.result.metadata.promptVersion ===
           (document.documentType === "BASIS_LV"
-            ? "basis-page-extraction-v1"
-            : "supplier-page-extraction-v1")
+            ? BASIS_PROMPT_VERSION
+            : PROMPT_VERSION)
     );
     if (existing) {
       cacheHits += 1;
@@ -361,7 +539,7 @@ async function main() {
     }
 
     let requestImage: Uint8Array | undefined;
-    if (page.mode !== "DIGITAL") {
+    if (page.mode !== "DIGITAL" && !(page.mode === "HYBRID" && nativeTextOnly)) {
       requestImage = await parser.renderPage(file, page.pageNumber, 1.5);
     }
     const estimatedTextBytes =
@@ -380,7 +558,7 @@ async function main() {
           );
     const estimatedSize = estimatedTextBytes + (requestImage?.byteLength ?? 0);
     process.stdout.write(
-      `REQUEST: model ${process.env.OPENAI_EXTRACTION_MODEL}; document ${document.relativePath}; page ${page.pageNumber}; ${requestMode(page.mode)}; estimated ${estimatedSize} bytes (${parsed.textItems.length} text items, ${requestImage?.byteLength ?? 0} image bytes).\n`
+      `REQUEST: model ${process.env.OPENAI_EXTRACTION_MODEL}; document ${document.relativePath}; page ${page.pageNumber}; ${requestMode(page.mode, nativeTextOnly)}; metadata ${includeDocumentMetadata ? "included" : "omitted"}; estimated ${estimatedSize} bytes (${parsed.textItems.length} text items, ${requestImage?.byteLength ?? 0} image bytes).\n`
     );
 
     const extractionInput = {
@@ -388,7 +566,10 @@ async function main() {
       page: parsed,
       pageImageDataUrl: requestImage
         ? `data:image/png;base64,${Buffer.from(requestImage).toString("base64")}`
-        : undefined
+        : undefined,
+      documentType: document.documentType as DocumentType,
+      discipline: document.discipline as Discipline,
+      includeDocumentMetadata
     };
     const rawResult: ExtractionResult =
       document.documentType === "BASIS_LV"
@@ -444,12 +625,12 @@ async function main() {
     cachedTokens += result.metadata.cachedTokens ?? 0;
     issueCount += validationIssues.length;
     process.stdout.write(
-      `RESPONSE: ${result.metadata.responseId ?? "n/a"}; input ${result.metadata.inputTokens ?? "n/a"}; output ${result.metadata.outputTokens ?? "n/a"}; cached ${result.metadata.cachedTokens ?? "n/a"}; duration ${result.metadata.durationMs} ms; cost unavailable (no configured pricing table); validation issues ${validationIssues.length}.\n`
+      `RESPONSE: ${result.metadata.responseId ?? "n/a"}; input ${result.metadata.inputTokens ?? "n/a"}; output ${result.metadata.outputTokens ?? "n/a"}; cached ${result.metadata.cachedTokens ?? "n/a"}; lines ${result.metadata.extractedLineCount ?? "n/a"}; output/line ${result.metadata.outputTokensPerExtractedLine?.toFixed(1) ?? "n/a"}; cost $${result.metadata.estimatedCostUsd?.toFixed(6) ?? "n/a"}; cost/line $${result.metadata.costPerExtractedLineUsd?.toFixed(6) ?? "n/a"}; duration ${result.metadata.durationMs} ms; validation issues ${validationIssues.length}.\n`
     );
   }
 
   process.stdout.write(
-    `Completed. input tokens ${inputTokens}, output tokens ${outputTokens}, cached tokens ${cachedTokens}, cache hits ${cacheHits}, validation issues ${issueCount}, cost unavailable without an explicitly configured pricing table.\n`
+    `Completed. input tokens ${inputTokens}, output tokens ${outputTokens}, cached tokens ${cachedTokens}, cache hits ${cacheHits}, validation issues ${issueCount}.\n`
   );
 }
 

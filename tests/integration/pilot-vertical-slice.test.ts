@@ -3,9 +3,11 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   buildExtractionRequestBody,
+  materializeNativeExtraction,
   type ExtractionResult
 } from "@/ai/openai-extraction-adapter";
 import {
+  CompactNativeExtractionSchema,
   ExtractionEnvelopeSchema,
   type ExtractionEnvelope
 } from "@/domain/contracts";
@@ -117,6 +119,59 @@ afterEach(async () => {
 });
 
 describe("real extraction boundary with fake OpenAI response", () => {
+  it("materializes compact native IDs into the immutable domain envelope", () => {
+    const compact = CompactNativeExtractionSchema.parse({
+      metadataCandidates: [],
+      sections: [],
+      offerGroups: [
+        {
+          key: "offer",
+          label: "Angebot",
+          textItemIds: ["ti-native-1"],
+          adjustments: [],
+          lines: [
+            {
+              sourcePositionNumber: ["2.1.730"],
+              supplierPositionNumber: [],
+              description: "Heizungskomponente",
+              manufacturer: [],
+              articleNumber: [],
+              quantity: [3],
+              unit: ["Stk"],
+              priceBasis: [1],
+              currency: ["EUR"],
+              moneyCandidates: [],
+              interpretedUnitPrice: [],
+              interpretedTotalPrice: [],
+              role: "PRIMARY",
+              groupKey: ["offer"],
+              continuation: false,
+              completenessStatus: "OFFER_WITHOUT_PRICE",
+              completenessReason: ["Kein gedruckter Preis"],
+              textItemIds: ["ti-native-1"]
+            }
+          ]
+        }
+      ],
+      basisPositions: [],
+      unresolvedFlags: []
+    });
+    const materialized = materializeNativeExtraction({
+      compact,
+      documentId: "doc-real",
+      page,
+      documentType: "SUPPLIER_OFFER",
+      discipline: "HEIZUNG",
+      promptVersion: "supplier-native-compact-v2"
+    });
+    const canonical = canonicalizeExtractionEvidence(materialized, "doc-real", page);
+    const line = canonical.extraction.offerGroups[0].lines[0];
+    expect(line.sourcePositionNumber).toBe("2.1.730");
+    expect(line.articleNumber).toBeNull();
+    expect(line.evidence[0].sourceText).toBe(page.textItems[0].rawText);
+    expect(line.evidence[0].status).toBe("VERIFIED_NATIVE");
+  });
+
   it("parses the strict response schema", () => {
     const serialized = JSON.stringify(envelope());
     expect(ExtractionEnvelopeSchema.parse(JSON.parse(serialized)).extraction.documentId).toBe(

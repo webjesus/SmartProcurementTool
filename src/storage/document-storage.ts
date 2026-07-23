@@ -1,6 +1,11 @@
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ExtractionResult, RecheckResult } from "@/ai/openai-extraction-adapter";
+import type {
+  MatchReviewAction,
+  PilotAnalysis,
+  SupplierDecision
+} from "@/domain/contracts";
 import type { AuditRecord, DocumentStorage, ReviewActionRecord } from "@/domain/repositories";
 import type { ValidationIssue } from "@/domain/validation";
 
@@ -105,10 +110,13 @@ export interface PersistedPilotReviewAction extends ReviewActionRecord {
 }
 
 export interface PilotState {
-  version: 1;
+  version: 2;
   runs: PersistedPilotRun[];
   reviewActions: PersistedPilotReviewAction[];
+  matchReviewActions: MatchReviewAction[];
+  supplierDecisions: SupplierDecision[];
   auditEvents: AuditRecord[];
+  analysis: PilotAnalysis | null;
 }
 
 export class LocalPilotPersistence {
@@ -126,14 +134,29 @@ export class LocalPilotPersistence {
     try {
       const parsed = JSON.parse(await readFile(this.statePath, "utf8")) as Partial<PilotState>;
       return {
-        version: 1,
+        version: 2,
         runs: Array.isArray(parsed.runs) ? parsed.runs : [],
         reviewActions: Array.isArray(parsed.reviewActions) ? parsed.reviewActions : [],
-        auditEvents: Array.isArray(parsed.auditEvents) ? parsed.auditEvents : []
+        matchReviewActions: Array.isArray(parsed.matchReviewActions)
+          ? parsed.matchReviewActions
+          : [],
+        supplierDecisions: Array.isArray(parsed.supplierDecisions)
+          ? parsed.supplierDecisions
+          : [],
+        auditEvents: Array.isArray(parsed.auditEvents) ? parsed.auditEvents : [],
+        analysis: parsed.analysis ?? null
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return { version: 1, runs: [], reviewActions: [], auditEvents: [] };
+        return {
+          version: 2,
+          runs: [],
+          reviewActions: [],
+          matchReviewActions: [],
+          supplierDecisions: [],
+          auditEvents: [],
+          analysis: null
+        };
       }
       throw error;
     }
@@ -153,6 +176,38 @@ export class LocalPilotPersistence {
   ): Promise<void> {
     const state = await this.read();
     state.reviewActions.push(action);
+    state.auditEvents.push(auditEvent);
+    await this.write(state);
+  }
+
+  async saveAnalysis(analysis: PilotAnalysis): Promise<void> {
+    const state = await this.read();
+    state.analysis = analysis;
+    await this.write(state);
+  }
+
+  async appendMatchReview(
+    action: MatchReviewAction,
+    auditEvent: AuditRecord,
+    analysis?: PilotAnalysis
+  ): Promise<void> {
+    const state = await this.read();
+    state.matchReviewActions.push(action);
+    state.auditEvents.push(auditEvent);
+    if (analysis) state.analysis = analysis;
+    await this.write(state);
+  }
+
+  async appendSupplierDecision(
+    decision: SupplierDecision,
+    auditEvent: AuditRecord
+  ): Promise<void> {
+    const state = await this.read();
+    const existing = state.supplierDecisions.findIndex(
+      (item) => item.basisPositionId === decision.basisPositionId
+    );
+    if (existing >= 0) state.supplierDecisions[existing] = decision;
+    else state.supplierDecisions.push(decision);
     state.auditEvents.push(auditEvent);
     await this.write(state);
   }

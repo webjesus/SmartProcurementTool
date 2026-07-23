@@ -7,6 +7,7 @@
 *.local.db
 *.local.sqlite
 /docs/CORPUS_REPORT.local.md
+/docs/HISTORICAL_EVALUATION.local.md
 
 # Secrets
 .env

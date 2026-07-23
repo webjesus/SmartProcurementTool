@@ -49,6 +49,17 @@ export const VerificationStatusSchema = z.enum([
 ]);
 export type VerificationStatus = z.infer<typeof VerificationStatusSchema>;
 
+export const OfferCompletenessStatusSchema = z.enum([
+  "PRICED_OFFER",
+  "OFFER_WITHOUT_PRICE",
+  "PRICE_ON_REQUEST",
+  "UNPRICED_TEMPLATE",
+  "EMPTY_LINE",
+  "NOT_OFFERED",
+  "PRICE_UNCLEAR"
+]);
+export type OfferCompletenessStatus = z.infer<typeof OfferCompletenessStatusSchema>;
+
 export const IssueCodeSchema = z.enum([
   "EVIDENCE_MISSING",
   "EVIDENCE_CONFLICTING",
@@ -134,7 +145,9 @@ export const OfferLineSchema = z.object({
   continuation: z.boolean(),
   evidence: z.array(EvidenceReferenceSchema),
   verificationStatus: VerificationStatusSchema,
-  lockedFields: z.array(z.string())
+  lockedFields: z.array(z.string()),
+  completenessStatus: OfferCompletenessStatusSchema.optional(),
+  completenessReason: z.string().optional()
 });
 export type OfferLine = z.infer<typeof OfferLineSchema>;
 
@@ -183,7 +196,8 @@ export const BasisPositionSchema = z.object({
   optional: z.boolean(),
   alternative: z.boolean(),
   heading: z.boolean(),
-  evidence: z.array(EvidenceReferenceSchema)
+  evidence: z.array(EvidenceReferenceSchema),
+  verificationStatus: VerificationStatusSchema.optional()
 });
 export type BasisPosition = z.infer<typeof BasisPositionSchema>;
 
@@ -200,6 +214,105 @@ export const PageExtractionSchema = z.object({
   unresolvedNotes: z.array(z.string())
 });
 export type PageExtraction = z.infer<typeof PageExtractionSchema>;
+
+const CompactStringValueSchema = z.array(z.string()).max(1);
+const CompactNumberValueSchema = z.array(z.number()).max(1);
+const CompactPriceBasisValueSchema = z
+  .array(z.union([z.literal(1), z.literal(10), z.literal(100), z.literal(1000)]))
+  .max(1);
+
+export const CompactMetadataCandidateSchema = z.object({
+  field: z.string(),
+  value: z.string(),
+  confidence: z.number().min(0).max(1),
+  textItemIds: z.array(z.string()).min(1)
+});
+
+export const CompactSectionSchema = z.object({
+  key: z.string(),
+  parentKey: CompactStringValueSchema,
+  label: z.string(),
+  kind: z.enum(["HEADING", "TABLE", "OFFER_GROUP", "BASIS_GROUP", "NOTE", "UNKNOWN"]),
+  textItemIds: z.array(z.string()).min(1)
+});
+
+export const CompactMoneyCandidateSchema = z.object({
+  kind: z.enum([
+    "UNIT_PRICE",
+    "TOTAL_PRICE",
+    "SUBTOTAL",
+    "DISCOUNT",
+    "SURCHARGE",
+    "OTHER"
+  ]),
+  rawValue: z.string(),
+  amount: CompactNumberValueSchema,
+  currency: CompactStringValueSchema,
+  priceBasis: CompactPriceBasisValueSchema,
+  textItemIds: z.array(z.string()).min(1)
+});
+
+export const CompactFinancialAdjustmentSchema = z.object({
+  kind: z.enum(["DISCOUNT", "SURCHARGE"]),
+  label: z.string(),
+  percentage: CompactNumberValueSchema,
+  amount: CompactNumberValueSchema,
+  textItemIds: z.array(z.string()).min(1)
+});
+
+export const CompactOfferLineSchema = z.object({
+  sourcePositionNumber: CompactStringValueSchema,
+  supplierPositionNumber: CompactStringValueSchema,
+  description: z.string(),
+  manufacturer: CompactStringValueSchema,
+  articleNumber: CompactStringValueSchema,
+  quantity: CompactNumberValueSchema,
+  unit: CompactStringValueSchema,
+  priceBasis: CompactPriceBasisValueSchema,
+  currency: CompactStringValueSchema,
+  moneyCandidates: z.array(CompactMoneyCandidateSchema),
+  interpretedUnitPrice: CompactNumberValueSchema,
+  interpretedTotalPrice: CompactNumberValueSchema,
+  role: OfferLineRoleSchema,
+  groupKey: CompactStringValueSchema,
+  continuation: z.boolean(),
+  completenessStatus: OfferCompletenessStatusSchema,
+  completenessReason: CompactStringValueSchema,
+  textItemIds: z.array(z.string()).min(1)
+});
+
+export const CompactOfferGroupSchema = z.object({
+  key: z.string(),
+  label: z.string(),
+  lines: z.array(CompactOfferLineSchema),
+  adjustments: z.array(CompactFinancialAdjustmentSchema),
+  textItemIds: z.array(z.string())
+});
+
+export const CompactBasisPositionSchema = z.object({
+  parentKey: CompactStringValueSchema,
+  positionNumber: z.string(),
+  description: z.string(),
+  quantity: CompactNumberValueSchema,
+  unit: CompactStringValueSchema,
+  technicalAttributes: z.array(z.object({ name: z.string(), value: z.string() })),
+  manufacturerRequirements: z.array(z.string()),
+  requiredScope: z.array(z.string()),
+  notes: z.array(z.string()),
+  optional: z.boolean(),
+  alternative: z.boolean(),
+  heading: z.boolean(),
+  textItemIds: z.array(z.string()).min(1)
+});
+
+export const CompactNativeExtractionSchema = z.object({
+  metadataCandidates: z.array(CompactMetadataCandidateSchema),
+  sections: z.array(CompactSectionSchema),
+  offerGroups: z.array(CompactOfferGroupSchema),
+  basisPositions: z.array(CompactBasisPositionSchema),
+  unresolvedFlags: z.array(z.string())
+});
+export type CompactNativeExtraction = z.infer<typeof CompactNativeExtractionSchema>;
 
 export const MatchKindSchema = z.enum([
   "ONE_TO_ONE",
@@ -243,6 +356,100 @@ export const RecommendationStatusSchema = z.enum([
   "NO_OFFER"
 ]);
 export type RecommendationStatus = z.infer<typeof RecommendationStatusSchema>;
+
+export const SupplierOptionSchema = z.object({
+  id: z.string(),
+  basisPositionIds: z.array(z.string()).min(1),
+  supplierDocumentId: z.string(),
+  supplierLabel: z.string(),
+  matchedOfferLineIds: z.array(z.string()),
+  matchLinkIds: z.array(z.string()),
+  primaryPrice: z.number().nullable(),
+  mandatoryComponentPrices: z.array(z.number()),
+  optionalPrices: z.array(z.number()),
+  comparableTotal: z.number().nullable(),
+  quantity: z.number().nullable(),
+  unit: z.string().nullable(),
+  scopeOfSupply: z.array(z.string()),
+  technicalDeviations: z.array(z.string()),
+  missingComponents: z.array(z.string()),
+  validationIssueIds: z.array(z.string()),
+  evidenceIds: z.array(z.string()),
+  quantityCompatible: z.boolean(),
+  unitCompatible: z.boolean(),
+  technicalCompatible: z.boolean(),
+  requiredScopeComplete: z.boolean(),
+  optionalSeparated: z.boolean(),
+  evidenceSufficient: z.boolean(),
+  extractionValidated: z.boolean(),
+  matchingAccepted: z.boolean(),
+  status: RecommendationStatusSchema
+});
+export type SupplierOption = z.infer<typeof SupplierOptionSchema>;
+
+export const BasisRecommendationSchema = z.object({
+  basisPositionId: z.string(),
+  status: RecommendationStatusSchema,
+  recommendedSupplierDocumentId: z.string().nullable(),
+  reasons: z.array(z.string()),
+  requiresOperatorConfirmation: z.boolean()
+});
+export type BasisRecommendation = z.infer<typeof BasisRecommendationSchema>;
+
+export const SupplierDecisionSchema = z.object({
+  id: z.string(),
+  basisPositionId: z.string(),
+  supplierDocumentId: z.string().nullable(),
+  status: z.enum(["SELECTED", "DEFERRED"]),
+  comment: z.string(),
+  operator: z.string(),
+  timestamp: z.string().datetime()
+});
+export type SupplierDecision = z.infer<typeof SupplierDecisionSchema>;
+
+export const MatchReviewActionSchema = z.object({
+  id: z.string(),
+  action: z.enum([
+    "CONFIRM_MATCH",
+    "CHOOSE_BASIS",
+    "COMBINE_LINES",
+    "SPLIT_GROUP",
+    "INCLUDE_REQUIRED_COMPONENT",
+    "INCLUDE_OPTIONAL",
+    "EXCLUDE_OPTIONAL",
+    "CONFIRM_REPLACEMENT",
+    "ADD_COMMENT"
+  ]),
+  basisPositionIds: z.array(z.string()),
+  offerLineIds: z.array(z.string()),
+  supplierDocumentId: z.string(),
+  comment: z.string(),
+  operator: z.string(),
+  timestamp: z.string().datetime()
+});
+export type MatchReviewAction = z.infer<typeof MatchReviewActionSchema>;
+
+export const PilotAnalysisSchema = z.object({
+  id: z.string(),
+  basisDocumentId: z.string(),
+  basisDocumentLabel: z.string(),
+  basisPages: z.array(z.number().int().positive()),
+  basisPositionFrom: z.string(),
+  basisPositionTo: z.string(),
+  supplierDocuments: z.array(
+    z.object({
+      id: z.string(),
+      label: z.string(),
+      pages: z.array(z.number().int().positive())
+    })
+  ),
+  basisPositions: z.array(BasisPositionSchema),
+  matchLinks: z.array(MatchLinkSchema),
+  supplierOptions: z.array(SupplierOptionSchema),
+  recommendations: z.array(BasisRecommendationSchema),
+  generatedAt: z.string().datetime()
+});
+export type PilotAnalysis = z.infer<typeof PilotAnalysisSchema>;
 
 export const RuleScopeSchema = z.enum([
   "GLOBAL",
@@ -296,8 +503,8 @@ export const TargetedRecheckSchema = z.object({
 });
 export type TargetedRecheck = z.infer<typeof TargetedRecheckSchema>;
 
-export const PROMPT_VERSION = "supplier-page-extraction-v1";
-export const BASIS_PROMPT_VERSION = "basis-page-extraction-v1";
+export const PROMPT_VERSION = "supplier-native-compact-v2";
+export const BASIS_PROMPT_VERSION = "basis-native-compact-v2";
 export const RECHECK_PROMPT_VERSION = "supplier-targeted-recheck-v1";
-export const SCHEMA_VERSION = "extraction-contract-v1";
+export const SCHEMA_VERSION = "native-compact-contract-v2";
 export const PREPROCESSING_VERSION = "pdf-page-v1";

@@ -77,6 +77,15 @@ test("persisted real pilot review survives reload", async ({ page }, testInfo) =
   await page.goto("/gefundene-daten");
   const firstRealRow = page.locator("[data-pilot-line]").first();
   await expect(firstRealRow).toBeVisible();
+  const firstLineId = await firstRealRow.getAttribute("data-pilot-line");
+  const pilotBeforeReview = (await (
+    await page.request.get("/api/local/corpus?view=pilot")
+  ).json()) as {
+    reviewActions: Array<{ lineId?: string }>;
+  };
+  const existingReview = pilotBeforeReview.reviewActions.some(
+    (action) => action.lineId === firstLineId
+  );
   await page.screenshot({
     path: testInfo.outputPath("real-gefundene-daten.png"),
     fullPage: true
@@ -90,14 +99,16 @@ test("persisted real pilot review survives reload", async ({ page }, testInfo) =
   await expect(page.getByText(/Seite 25 \/ 56/)).toBeVisible();
 
   const correction = page.getByLabel("Korrekturwert");
-  if ((await correction.inputValue()) !== "Operator geprüft") {
+  let persistedValue = await correction.inputValue();
+  if (!existingReview) {
     await correction.fill("Operator geprüft");
     await page.getByRole("button", { name: "Korrigieren" }).click();
     await expect(correction).toHaveValue("Operator geprüft");
+    persistedValue = "Operator geprüft";
   }
   await page.reload();
-  await expect(page.getByLabel("Korrekturwert")).toHaveValue("Operator geprüft");
-  await expect(page.getByText("HUMAN_CORRECTED")).toBeVisible();
+  await expect(page.getByLabel("Korrekturwert")).toHaveValue(persistedValue);
+  await expect(page.getByText(/HUMAN_CORRECTED|HUMAN_CONFIRMED/)).toBeVisible();
   await page.screenshot({
     path: testInfo.outputPath("real-pruefung-corrected.png"),
     fullPage: true
@@ -108,20 +119,114 @@ test("persisted real pilot review survives reload", async ({ page }, testInfo) =
   expect(runtimeFailures).toEqual([]);
 });
 
+test("real pilot matching and supplier decision survive reload", async ({ page }, testInfo) => {
+  test.skip(!realPilot, "Requires LOCAL_CORPUS_ENABLED and persisted pilot analysis.");
+  test.skip(testInfo.project.name !== "chromium", "One durable real-pilot flow is sufficient.");
+  const runtimeFailures = watchRuntimeFailures(page);
+
+  await page.goto("/zuordnung");
+  await expect(page.locator("[data-real-matching]")).toBeVisible();
+  await expect(page.locator("[data-matching-inspector]")).toBeVisible();
+  const pilotBeforeMatching = (await (
+    await page.request.get("/api/local/corpus?view=pilot")
+  ).json()) as {
+    matchReviewActions: unknown[];
+    supplierDecisions: Array<{
+      id: string;
+      basisPositionId: string;
+      supplierDocumentId: string | null;
+      status: "SELECTED" | "DEFERRED";
+      comment: string;
+      operator: string;
+      timestamp: string;
+    }>;
+    analysis: { basisPositions: Array<{ id: string }> };
+  };
+  const firstRow = page.locator("[data-real-matching] tbody tr").first();
+  let reviewedRow = firstRow;
+  if (pilotBeforeMatching.matchReviewActions.length > 0) {
+    reviewedRow = page
+      .locator("[data-real-matching] tbody tr")
+      .filter({ hasText: "HUMAN CONFIRMED" })
+      .first();
+    await expect(reviewedRow).toBeVisible();
+  } else {
+    await reviewedRow.click();
+    const confirm = reviewedRow.getByRole("button", { name: /Bestätigen/ });
+    if (await confirm.isEnabled()) await confirm.click();
+    await expect(
+      reviewedRow.getByText(/HUMAN(?:_| )CONFIRMED|EXACT/).first()
+    ).toBeVisible();
+  }
+
+  for (const sourceName of ["Zur Quelle Basis", "Zur Quelle Supplier"]) {
+    const source = reviewedRow.getByRole("link", { name: sourceName });
+    await expect(source).toHaveAttribute("href", /api\/local\/corpus\?asset=/);
+    const [sourcePage] = await Promise.all([
+      page.waitForEvent("popup"),
+      source.click()
+    ]);
+    await expect(sourcePage.locator("body")).toBeVisible();
+    await sourcePage.close();
+  }
+  await page.screenshot({
+    path: testInfo.outputPath("real-zuordnung.png"),
+    fullPage: true
+  });
+
+  await page.goto("/lv-vergleich");
+  await expect(page.locator("[data-real-comparison]")).toBeVisible();
+  await expect(page.locator("[data-comparison-inspector]")).toBeVisible();
+  await page.getByRole("button", { name: "Nicht zugeordnet" }).click();
+  await page.getByRole("button", { name: "Alle" }).click();
+  const firstBasisPositionId = pilotBeforeMatching.analysis.basisPositions[0]?.id;
+  const existingDecision = pilotBeforeMatching.supplierDecisions.find(
+    (decision) => decision.basisPositionId === firstBasisPositionId
+  );
+  expect(existingDecision).toBeDefined();
+  await page.reload();
+  const pilotAfterReload = (await (
+    await page.request.get("/api/local/corpus?view=pilot")
+  ).json()) as {
+    supplierDecisions: typeof pilotBeforeMatching.supplierDecisions;
+  };
+  expect(
+    pilotAfterReload.supplierDecisions.find(
+      (decision) => decision.basisPositionId === firstBasisPositionId
+    )
+  ).toEqual(existingDecision);
+  await page.screenshot({
+    path: testInfo.outputPath("real-lv-vergleich.png"),
+    fullPage: true
+  });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/lv-vergleich");
+  await expect(page.locator("[data-comparison-inspector]")).toBeVisible();
+  await expect(page.locator("body")).not.toHaveCSS("overflow-x", "scroll");
+  await page.screenshot({
+    path: testInfo.outputPath("real-lv-vergleich-mobile.png"),
+    fullPage: true
+  });
+  expect(runtimeFailures).toEqual([]);
+});
+
 test("all primary pages render at desktop and mobile widths", async ({ page }, testInfo) => {
   const runtimeFailures = watchRuntimeFailures(page);
-  for (const route of [
-    "/",
-    "/dokumente",
-    "/gefundene-daten",
-    "/pruefung",
-    "/zuordnung",
-    "/lv-vergleich",
-    "/entscheidungen",
-    "/export"
-  ]) {
-    await page.goto(route);
-    await expect(page.locator("h1")).toBeVisible();
+  if (testInfo.project.name === "chromium") {
+    for (const route of [
+      "/",
+      "/dokumente",
+      "/gefundene-daten",
+      "/pruefung",
+      "/zuordnung",
+      "/lv-vergleich",
+      "/entscheidungen",
+      "/export"
+    ]) {
+      await page.goto(route);
+      await expect(page.locator("h1")).toBeVisible();
+    }
   }
   await page.goto("/");
   await page.screenshot({

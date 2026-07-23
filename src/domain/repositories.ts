@@ -39,6 +39,9 @@ export interface OpenAiExtractionAdapter {
     documentId: string;
     page: ParsedPage;
     pageImageDataUrl?: string;
+    documentType?: "BASIS_LV" | "SUPPLIER_OFFER" | "FINAL_DECISION" | "HISTORICAL_CALCULATION" | "MANUFACTURER_CALCULATION" | "MANUAL_PRICE_TABLE" | "UNKNOWN";
+    discipline?: "SANITAER" | "HEIZUNG" | "MIXED" | "UNKNOWN";
+    includeDocumentMetadata?: boolean;
   }): Promise<ExtractionEnvelope>;
   recheckIssue(input: {
     issueCodes: string[];

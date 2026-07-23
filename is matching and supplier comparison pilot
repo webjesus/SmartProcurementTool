@@ -1,0 +1,16 @@
+warning: in the working copy of '.gitignore', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'scripts/corpus-process.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/ai/openai-extraction-adapter.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/ai/prompts.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/app/api/review-actions/route.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/app/globals.css', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/section-view.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/domain/contracts.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/domain/matching.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/domain/repositories.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/domain/validation.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/storage/document-storage.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'tests/e2e/operator-flow.spec.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'tests/integration/pilot-vertical-slice.test.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'tests/unit/matching.test.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'tests/unit/storage.test.ts', LF will be replaced by CRLF the next time Git touches it

@@ -29,7 +29,15 @@ import {
 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/status-badge";
-import type { EvidenceReference, OfferLine } from "@/domain/contracts";
+import type {
+  BasisPosition,
+  EvidenceReference,
+  MatchReviewAction,
+  OfferLine,
+  PilotAnalysis,
+  SupplierDecision,
+  SupplierOption
+} from "@/domain/contracts";
 import type { ValidationIssue } from "@/domain/validation";
 import {
   comparisonRows,
@@ -66,6 +74,7 @@ type PilotReviewActionView = {
 type PilotRunView = {
   id: string;
   document: {
+    id: string;
     relativePath: string;
     pageNumber: number;
     pageCount: number;
@@ -75,6 +84,7 @@ type PilotRunView = {
     envelope: {
       extraction: {
         offerGroups: Array<{ lines: OfferLine[] }>;
+        basisPositions: BasisPosition[];
       };
     };
   };
@@ -83,9 +93,12 @@ type PilotRunView = {
 };
 
 type PilotStateView = {
-  version: 1;
+  version: 2;
   runs: PilotRunView[];
   reviewActions: PilotReviewActionView[];
+  matchReviewActions: MatchReviewAction[];
+  supplierDecisions: SupplierDecision[];
+  analysis: PilotAnalysis | null;
 };
 
 const Button = ({
@@ -828,7 +841,7 @@ function SyntheticReview() {
   );
 }
 
-function Matching() {
+function SyntheticMatching() {
   const [confirmed, setConfirmed] = useState<string[]>([]);
   return (
     <>
@@ -862,10 +875,11 @@ const filterOptions = [
   ["Unterschiedlicher Lieferumfang", "DIFFERENT_SCOPE_OF_SUPPLY"],
   ["Technische Abweichung", "TECHNICAL_DEVIATION"],
   ["Unklare Preise", "PRICE_UNCLEAR"],
+  ["Nicht zugeordnet", "MATCHING_UNCLEAR"],
   ["Kein Angebot", "NO_OFFER"]
 ] as const;
 
-function Comparison() {
+function SyntheticComparison() {
   const [filter, setFilter] = useState("ALL");
   const [selected, setSelected] = useState(comparisonRows[0].position);
   const rows = filter === "ALL" ? comparisonRows : comparisonRows.filter((row) => row.status === filter);
@@ -909,7 +923,7 @@ function Comparison() {
   );
 }
 
-function Decisions() {
+function SyntheticDecisions() {
   const [selected, setSelected] = useState<Record<string, string>>({});
   const pending = comparisonRows.filter((row) => row.status !== "NO_OFFER");
   return (
@@ -932,6 +946,348 @@ function Decisions() {
       </div>
     </>
   );
+}
+
+function pilotSourceHref(
+  pilot: PilotStateView,
+  documentId: string,
+  pageNumber: number
+): string | null {
+  const run = pilot.runs.find(
+    (item) =>
+      item.document.id === documentId && item.document.pageNumber === pageNumber
+  );
+  return run
+    ? `/api/local/corpus?asset=${encodeURIComponent(run.pageImageAsset)}`
+    : null;
+}
+
+function optionDisplay(option: SupplierOption | undefined) {
+  if (!option) return "Nicht zugeordnet";
+  if (option.comparableTotal === null) return option.status.replaceAll("_", " ");
+  return `${formatNumber(option.comparableTotal)} €`;
+}
+
+function RealMatching({
+  pilot,
+  reload
+}: {
+  pilot: PilotStateView;
+  reload: () => Promise<void>;
+}) {
+  const analysis = pilot.analysis;
+  const [selectedLinkId, setSelectedLinkId] = useState<string | null>(
+    analysis?.matchLinks[0]?.id ?? null
+  );
+  const [manualAction, setManualAction] =
+    useState<MatchReviewAction["action"]>("ADD_COMMENT");
+  const [basisChoice, setBasisChoice] = useState(
+    analysis?.basisPositions[0]?.id ?? ""
+  );
+  const [comment, setComment] = useState("");
+  const [pending, setPending] = useState(false);
+  const lineIndex = useMemo(
+    () =>
+      new Map(
+        pilot.runs.flatMap((run) =>
+          run.result.envelope.extraction.offerGroups.flatMap((group) =>
+            group.lines.map((line) => [
+              line.id,
+              { line: reviewedLine(line, run.id, pilot.reviewActions), run }
+            ] as const)
+          )
+        )
+      ),
+    [pilot]
+  );
+  const basisIndex = useMemo(
+    () => new Map((analysis?.basisPositions ?? []).map((position) => [position.id, position])),
+    [analysis]
+  );
+  if (!analysis) {
+    return (
+      <>
+        <PageHeader eyebrow="ZUORDNUNG" title="Reale Pilot-Zuordnung" description="Die begrenzte Matching-Analyse ist noch nicht verfügbar." />
+        <div className="notice"><CircleAlert size={19} /><div><strong>Analyse noch nicht erzeugt</strong><span>Die reale Extraktion ist vorhanden, aber der begrenzte Matching-Lauf fehlt.</span></div></div>
+      </>
+    );
+  }
+  const selected =
+    analysis.matchLinks.find((link) => link.id === selectedLinkId) ??
+    analysis.matchLinks[0];
+
+  async function submit(
+    action: MatchReviewAction["action"],
+    basisPositionIds: string[],
+    offerLineIds: string[],
+    supplierDocumentId: string
+  ) {
+    setPending(true);
+    try {
+      const response = await fetch("/api/review-actions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "MATCH",
+          action,
+          basisPositionIds,
+          offerLineIds,
+          supplierDocumentId,
+          comment,
+          operator: "local-operator"
+        })
+      });
+      if (!response.ok) throw new Error(`Matching action failed: ${response.status}`);
+      await reload();
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="ZUORDNUNG · REAL PILOT"
+        title="Angebote mit Basis-LV verbinden"
+        description={`${analysis.basisPositionFrom}–${analysis.basisPositionTo}: Kandidaten aus unabhängigen Extraktionen, danach regelbasierte Constraints.`}
+      />
+      <div className="notice"><Link2 size={19} /><div><strong>Extraktion bleibt unverändert</strong><span>Operatoraktionen erzeugen ReviewAction und AuditEvent in der lokalen Pilotdatei.</span></div></div>
+      <div className="matching-pilot-layout">
+        <section className="panel">
+          <div className="table-scroll">
+            <table data-real-matching>
+              <thead><tr><th>LV-Position</th><th>Supplier-Zeile</th><th>Lieferant</th><th>Art</th><th>Status</th><th>Konkrete Gründe</th><th>Quellen</th><th /></tr></thead>
+              <tbody>{analysis.matchLinks.map((link) => {
+                const basis = basisIndex.get(link.basisPositionIds[0]);
+                const offer = lineIndex.get(link.offerLineIds[0]);
+                const basisEvidence = basis?.evidence[0];
+                const offerEvidence = offer?.line.evidence[0];
+                const basisHref = basisEvidence
+                  ? pilotSourceHref(pilot, basisEvidence.documentId, basisEvidence.pageNumber)
+                  : null;
+                const offerHref = offerEvidence
+                  ? pilotSourceHref(pilot, offerEvidence.documentId, offerEvidence.pageNumber)
+                  : null;
+                return <tr key={link.id} className={selected?.id === link.id ? "selected-row" : ""} onClick={() => setSelectedLinkId(link.id)}>
+                  <td><strong>{basis?.positionNumber ?? "—"}</strong></td>
+                  <td>{offer?.line.description ?? "Nicht zugeordnet"}{link.offerLineIds.length > 1 ? <small className="scope-note">+ {link.offerLineIds.length - 1} Komponenten</small> : null}</td>
+                  <td>{offer?.run.document.relativePath ?? "—"}</td>
+                  <td><span className="mono-label">{link.kind}</span></td>
+                  <td><StatusBadge>{link.confirmedByOperator ? "HUMAN_CONFIRMED" : link.status}</StatusBadge></td>
+                  <td>{link.reasons.join(" · ") || "Keine belastbare Begründung"}</td>
+                  <td><div className="source-links">
+                    {basisHref ? <a href={basisHref} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>Zur Quelle Basis</a> : null}
+                    {offerHref ? <a href={offerHref} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>Zur Quelle Supplier</a> : null}
+                  </div></td>
+                  <td><Button kind="ghost" disabled={pending || link.confirmedByOperator} onClick={() => submit("CONFIRM_MATCH", link.basisPositionIds, link.offerLineIds, offer?.run.document.id ?? "")}>{link.confirmedByOperator ? <Check size={15} /> : null} Bestätigen</Button></td>
+                </tr>;
+              })}</tbody>
+            </table>
+          </div>
+        </section>
+        {selected ? <aside className="panel position-inspector" data-matching-inspector>
+          <span className="eyebrow">MANUELLE KONTROLLE</span>
+          <h2>{basisIndex.get(selected.basisPositionIds[0])?.positionNumber}</h2>
+          <label className="comment-field"><span>Andere Basis-Position</span><select value={basisChoice} onChange={(event) => setBasisChoice(event.target.value)}>{analysis.basisPositions.map((position) => <option key={position.id} value={position.id}>{position.positionNumber} · {position.description}</option>)}</select></label>
+          <label className="comment-field"><span>Aktion</span><select value={manualAction} onChange={(event) => setManualAction(event.target.value as MatchReviewAction["action"])}>
+            <option value="CHOOSE_BASIS">Andere Basis-Position wählen</option>
+            <option value="COMBINE_LINES">Mehrere Supplier-Zeilen verbinden</option>
+            <option value="SPLIT_GROUP">Supplier-Gruppe teilen</option>
+            <option value="INCLUDE_REQUIRED_COMPONENT">Pflichtkomponente einschließen</option>
+            <option value="EXCLUDE_OPTIONAL">Optional ausschließen</option>
+            <option value="INCLUDE_OPTIONAL">Optional einschließen</option>
+            <option value="CONFIRM_REPLACEMENT">Ersatz bestätigen</option>
+            <option value="ADD_COMMENT">Kommentar hinzufügen</option>
+          </select></label>
+          <label className="comment-field"><span>Kommentar</span><textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Begründung für Audit-Trail" /></label>
+          <Button disabled={pending} onClick={() => submit(manualAction, manualAction === "CHOOSE_BASIS" ? [basisChoice] : selected.basisPositionIds, selected.offerLineIds, lineIndex.get(selected.offerLineIds[0])?.run.document.id ?? "")}>Aktion speichern</Button>
+          <div className="audit-note"><History size={15} /> Persistiert und nach Restart wiederhergestellt.</div>
+        </aside> : null}
+      </div>
+    </>
+  );
+}
+
+function Matching() {
+  const { pilot, reload } = usePilotState();
+  if (pilot === undefined) return <div className="panel loading-panel">Pilotdaten werden geladen…</div>;
+  return pilot === null ? <SyntheticMatching /> : <RealMatching pilot={pilot} reload={reload} />;
+}
+
+function RealComparison({
+  pilot,
+  reload
+}: {
+  pilot: PilotStateView;
+  reload: () => Promise<void>;
+}) {
+  const analysis = pilot.analysis;
+  const [filter, setFilter] = useState("ALL");
+  const [selected, setSelected] = useState(analysis?.basisPositions[0]?.id ?? "");
+  const [comment, setComment] = useState("");
+  if (!analysis) {
+    return (
+      <>
+        <PageHeader eyebrow="LV-VERGLEICH" title="Realer Pilotvergleich" description="Die begrenzte Matching-Analyse ist noch nicht verfügbar." />
+        <div className="notice"><CircleAlert size={19} /><div><strong>Keine Pilotanalyse</strong><span>Matching muss zuerst lokal erzeugt werden.</span></div></div>
+      </>
+    );
+  }
+  const recommendationIndex = new Map(
+    analysis.recommendations.map((recommendation) => [
+      recommendation.basisPositionId,
+      recommendation
+    ])
+  );
+  const visible = analysis.basisPositions.filter((position) => {
+    const status = recommendationIndex.get(position.id)?.status;
+    return filter === "ALL" || status === filter;
+  });
+  const detail =
+    analysis.basisPositions.find((position) => position.id === selected) ??
+    analysis.basisPositions[0];
+  const detailOptions = analysis.supplierOptions.filter((option) =>
+    option.basisPositionIds.includes(detail.id)
+  );
+  const decision = pilot.supplierDecisions.find(
+    (item) => item.basisPositionId === detail.id
+  );
+  const lineIndex = new Map(
+    pilot.runs.flatMap((run) =>
+      run.result.envelope.extraction.offerGroups.flatMap((group) =>
+        group.lines.map((line) => [line.id, { line, run }] as const)
+      )
+    )
+  );
+  async function decide(supplierDocumentId: string | null, status: "SELECTED" | "DEFERRED") {
+    const response = await fetch("/api/review-actions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "DECISION",
+        basisPositionId: detail.id,
+        supplierDocumentId,
+        status,
+        comment,
+        operator: "local-operator"
+      })
+    });
+    if (!response.ok) throw new Error(`Decision failed: ${response.status}`);
+    await reload();
+  }
+  return (
+    <>
+      <PageHeader
+        eyebrow="LV-VERGLEICH · REAL PILOT"
+        title="Belastbarer Angebotsvergleich"
+        description="Comparable totals enthalten nur belegte Primär- und Pflichtkomponenten; Optionalen und Alternativen bleiben separat."
+      />
+      <div className="comparison-layout">
+        <section>
+          <div className="filter-tabs">
+            {filterOptions.map(([label, value]) => <button key={value} className={filter === value ? "active" : ""} onClick={() => setFilter(value)}>{label}</button>)}
+          </div>
+          <div className="panel comparison-table">
+            <div className="table-scroll"><table data-real-comparison>
+              <thead><tr><th>LV-Pos.</th><th>Beschreibung</th><th>Menge</th>{analysis.supplierDocuments.map((supplier) => <th key={supplier.id}>{supplier.label}</th>)}<th>Empfehlung</th><th>Operator</th></tr></thead>
+              <tbody>{visible.map((position) => {
+                const options = analysis.supplierOptions.filter((option) => option.basisPositionIds.includes(position.id));
+                const recommendation = recommendationIndex.get(position.id);
+                const rowDecision = pilot.supplierDecisions.find((item) => item.basisPositionId === position.id);
+                return <tr key={position.id} onClick={() => setSelected(position.id)} className={detail.id === position.id ? "selected-row" : ""}>
+                  <td><strong>{position.positionNumber}</strong></td><td>{position.description}<small className="scope-note">{position.requiredScope.join(" · ") || "Scope nicht explizit"}</small></td><td>{position.quantity ?? "—"} {position.unit ?? ""}</td>
+                  {analysis.supplierDocuments.map((supplier) => <td key={supplier.id}>{optionDisplay(options.find((option) => option.supplierDocumentId === supplier.id))}</td>)}
+                  <td><StatusBadge>{recommendation?.status ?? "NO_OFFER"}</StatusBadge></td>
+                  <td>{rowDecision ? `${rowDecision.status}${rowDecision.supplierDocumentId ? ` · ${analysis.supplierDocuments.find((item) => item.id === rowDecision.supplierDocumentId)?.label}` : ""}` : "Offen"}</td>
+                </tr>;
+              })}</tbody>
+            </table></div>
+          </div>
+        </section>
+        <aside className="panel position-inspector" data-comparison-inspector>
+          <span className="eyebrow">POSITION {detail.positionNumber}</span>
+          <h2>{detail.description}</h2>
+          <div className="requirement-grid"><div><span>Menge</span><strong>{detail.quantity ?? "—"} {detail.unit ?? ""}</strong></div><div><span>Validation</span><strong>{detail.verificationStatus ?? "NEEDS_REVIEW"}</strong></div></div>
+          <h3>Lieferantenoptionen</h3>
+          {detailOptions.map((option) => {
+            const firstLine = lineIndex.get(option.matchedOfferLineIds[0]);
+            const evidence = firstLine?.line.evidence[0];
+            const href = evidence ? pilotSourceHref(pilot, evidence.documentId, evidence.pageNumber) : null;
+            return <div className="supplier-option" key={option.id}>
+              <span>{option.supplierLabel}</span><strong>{optionDisplay(option)}</strong>
+              <small>{option.scopeOfSupply.length} Scope-Zeilen · Pflicht {option.mandatoryComponentPrices.length} · Optional {option.optionalPrices.length}</small>
+              <small>{option.status.replaceAll("_", " ")}{option.validationIssueIds.length ? ` · ${option.validationIssueIds.length} Issues` : ""}</small>
+              {href ? <a href={href} target="_blank" rel="noreferrer">Zur Quelle Supplier</a> : null}
+              <Button kind="ghost" onClick={() => decide(option.supplierDocumentId, "SELECTED")}>{decision?.supplierDocumentId === option.supplierDocumentId ? <Check size={15} /> : null} Supplier auswählen</Button>
+            </div>;
+          })}
+          {detail.evidence[0] ? <a className="source-button" href={pilotSourceHref(pilot, detail.evidence[0].documentId, detail.evidence[0].pageNumber) ?? "#"} target="_blank" rel="noreferrer"><Eye size={16} /> Zur Quelle Basis</a> : null}
+          <div className="inspector-status"><StatusBadge>{recommendationIndex.get(detail.id)?.status ?? "NO_OFFER"}</StatusBadge><p>{recommendationIndex.get(detail.id)?.reasons.join(" · ") || "Keine vergleichbare Option."}</p></div>
+          <label className="comment-field"><span>Entscheidungskommentar</span><textarea value={comment} onChange={(event) => setComment(event.target.value)} /></label>
+          <Button kind="secondary" onClick={() => decide(null, "DEFERRED")}>Entscheidung zurückstellen</Button>
+        </aside>
+      </div>
+    </>
+  );
+}
+
+function Comparison() {
+  const { pilot, reload } = usePilotState();
+  if (pilot === undefined) return <div className="panel loading-panel">Pilotdaten werden geladen…</div>;
+  return pilot === null ? <SyntheticComparison /> : <RealComparison pilot={pilot} reload={reload} />;
+}
+
+function RealDecisions({
+  pilot,
+  reload
+}: {
+  pilot: PilotStateView;
+  reload: () => Promise<void>;
+}) {
+  const analysis = pilot.analysis;
+  const [comments, setComments] = useState<Record<string, string>>({});
+  if (!analysis) return <div className="notice">Keine reale Pilotanalyse vorhanden.</div>;
+  async function submit(positionId: string, supplierDocumentId: string | null, status: "SELECTED" | "DEFERRED") {
+    const response = await fetch("/api/review-actions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "DECISION",
+        basisPositionId: positionId,
+        supplierDocumentId,
+        status,
+        comment: comments[positionId] ?? "",
+        operator: "local-operator"
+      })
+    });
+    if (!response.ok) throw new Error(`Decision failed: ${response.status}`);
+    await reload();
+  }
+  return (
+    <>
+      <PageHeader eyebrow="ENTSCHEIDUNGEN · REAL PILOT" title="Kommerzielle Auswahl" description="Jede Auswahl oder Zurückstellung erzeugt SupplierDecision und AuditEvent." />
+      <div className="decision-grid" data-real-decisions>
+        {analysis.basisPositions.map((position) => {
+          const recommendation = analysis.recommendations.find((item) => item.basisPositionId === position.id);
+          const options = analysis.supplierOptions.filter((option) => option.basisPositionIds.includes(position.id));
+          const decision = pilot.supplierDecisions.find((item) => item.basisPositionId === position.id);
+          return <article className="panel decision-card" key={position.id}>
+            <div className="decision-head"><span className="mono-label">{position.positionNumber}</span><StatusBadge>{recommendation?.status ?? "NO_OFFER"}</StatusBadge></div>
+            <h2>{position.description}</h2>
+            <div className="choice-grid">{options.map((option) => <button key={option.id} onClick={() => submit(position.id, option.supplierDocumentId, "SELECTED")} className={decision?.supplierDocumentId === option.supplierDocumentId ? "selected" : ""}><span>{option.supplierLabel}</span><strong>{optionDisplay(option)}</strong>{decision?.supplierDocumentId === option.supplierDocumentId ? <CheckCircle2 size={17} /> : null}</button>)}</div>
+            <label className="comment-field"><span>Entscheidungsgrund</span><input value={comments[position.id] ?? ""} onChange={(event) => setComments((current) => ({ ...current, [position.id]: event.target.value }))} placeholder="Kommentar für Audit-Trail" /></label>
+            <Button kind="secondary" onClick={() => submit(position.id, null, "DEFERRED")}>Zurückstellen</Button>
+          </article>;
+        })}
+      </div>
+    </>
+  );
+}
+
+function Decisions() {
+  const { pilot, reload } = usePilotState();
+  if (pilot === undefined) return <div className="panel loading-panel">Pilotdaten werden geladen…</div>;
+  return pilot === null ? <SyntheticDecisions /> : <RealDecisions pilot={pilot} reload={reload} />;
 }
 
 function ExportView() {

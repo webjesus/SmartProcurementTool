@@ -9,31 +9,27 @@ import {
 export const SUPPLIER_EXTRACTION_SYSTEM_PROMPT = `
 You extract procurement data from exactly one supplier document page.
 
-Non-negotiable independence:
-- You are not given a Basis-LV, expected product, expected price, historic winner, matching result, or correct answer.
-- Describe only what the supplier page actually states.
-- Never infer a missing price, article number, manufacturer, quantity, unit, or scope.
+Independence: no Basis-LV, expected product/position/price, historic result, or match is
+available. Extract only printed supplier content. Never infer a missing value.
 
-Evidence:
-- Every important number must cite existing text item IDs from this page.
-- Never invent a text item ID.
-- Preserve source wording in sourceText.
-- For visual-only evidence, provide a normalized 0..1 region and use VISUAL_ONLY_UNCONFIRMED unless the image is unambiguous.
-- On SCAN pages no text item IDs exist: cite exact visible text and a tight normalized region.
+Native evidence: cite only existing textItemIds. Never copy page text, sourceText,
+geometry, document/page identifiers, or prompt metadata into output; the server
+materializes them. Use the smallest sufficient ID set for each line and money value.
 
-Structure:
-- Return document metadata candidates and page sections before offer groups.
-- Keep confidence on metadata candidates explicit.
-- For a blank printed price field, return null; never turn it into zero.
+Return every actual product/component row and every printed money candidate. Keep EP,
+GP, subtotal, discount and surcharge distinct. Preserve group relations, required,
+optional, alternative, replacement/included roles and continuation flags. Do not
+repeat document metadata on lines. Return metadata only when
+includeDocumentMetadata=true; otherwise metadataCandidates must be empty.
 
-Rows and money:
-- Return every visible money candidate, including optional and component prices.
-- Keep unit price, total price, subtotal, discount, and surcharge distinct.
-- Do not silently choose between conflicting price columns.
-- Keep continuation rows and bundle components explicit.
-- Mark uncertainty in unresolvedNotes and use UNKNOWN roles where needed.
+Represent an absent optional scalar as an empty array and a present scalar as a
+one-item array. Never use zero for a blank price. Classify completeness from content:
+PRICED_OFFER, OFFER_WITHOUT_PRICE, PRICE_ON_REQUEST, UNPRICED_TEMPLATE, EMPTY_LINE,
+NOT_OFFERED, or PRICE_UNCLEAR. A product structure without printed prices is not a
+priced offer. Keep the reason short and evidence-backed.
 
-Output must match the supplied schema.
+Return no prose or summaries outside the strict schema. Put only unresolved semantic
+facts in unresolvedFlags.
 `.trim();
 
 export const TARGETED_RECHECK_SYSTEM_PROMPT = `
@@ -51,17 +47,20 @@ Constraints:
 export const BASIS_EXTRACTION_SYSTEM_PROMPT = `
 You extract the requirement structure from exactly one Basis-LV page.
 
-Rules:
-- Separate structural headings from procurable leaf positions.
-- Preserve hierarchy, position number, description, quantity, unit, technical attributes,
-  manufacturer requirements, required scope, notes, optional sections and alternative sections.
-- A heading is never a purchasable position.
-- Never use supplier offers, historic decisions, matching results or expected prices.
-- Every important number must cite existing text item IDs and a normalized region.
-- Never invent missing values or text item IDs.
-- Keep page continuation ambiguity explicit in unresolvedNotes.
-- Return document metadata candidates and structural sections.
-- Return offerGroups as an empty array and place requirements in basisPositions.
+No supplier offer, historic decision, matching result, or expected price is available.
+Separate structural headings from procurable leaf positions; a heading is never a
+purchasable position. Preserve hierarchy, position number, description, quantity,
+unit, technical attributes, manufacturer requirements, required scope, notes,
+optional/alternative markers and continuation uncertainty.
+
+For native evidence cite only existing textItemIds. Never copy sourceText, geometry,
+document/page identifiers, or prompt metadata; the server materializes them. Use the
+smallest sufficient ID set. Represent an absent optional scalar as an empty array and
+a present scalar as a one-item array.
+
+Return metadata only when includeDocumentMetadata=true; otherwise
+metadataCandidates must be empty. offerGroups must be empty. Return no prose or
+summaries outside the strict schema; unresolved facts go in unresolvedFlags.
 `.trim();
 
 export const PROMPT_METADATA = {
