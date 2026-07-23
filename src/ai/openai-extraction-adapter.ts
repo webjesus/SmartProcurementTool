@@ -8,7 +8,9 @@ import {
   PROMPT_VERSION,
   RECHECK_PROMPT_VERSION,
   SCHEMA_VERSION,
-  type ExtractionEnvelope
+  TargetedRecheckSchema,
+  type ExtractionEnvelope,
+  type TargetedRecheck
 } from "@/domain/contracts";
 import type { OpenAiExtractionAdapter, ParsedPage } from "@/domain/repositories";
 import {
@@ -38,6 +40,32 @@ export interface AiRunMetadata {
 export interface ExtractionResult {
   envelope: ExtractionEnvelope;
   metadata: AiRunMetadata;
+}
+
+export interface RecheckResult {
+  result: TargetedRecheck;
+  metadata: AiRunMetadata;
+}
+
+export function buildExtractionRequestBody(input: {
+  documentId: string;
+  page: ParsedPage;
+}) {
+  return {
+    documentId: input.documentId,
+    pageNumber: input.page.pageNumber,
+    pageMode: input.page.mode,
+    ...(input.page.mode === "SCAN"
+      ? {}
+      : {
+          textItems: input.page.textItems.map((item) => ({
+            id: item.id,
+            text: item.rawText,
+            order: item.order,
+            region: item.region
+          }))
+        })
+  };
 }
 
 export function createExtractionCacheKey(input: {
@@ -107,18 +135,7 @@ export class OfficialOpenAiExtractionAdapter implements OpenAiExtractionAdapter 
     page: ParsedPage;
     pageImageDataUrl?: string;
   }): Promise<ExtractionResult> {
-    const textItems = input.page.textItems.map((item) => ({
-      id: item.id,
-      text: item.rawText,
-      order: item.order,
-      region: item.region
-    }));
-    const requestBody = {
-      documentId: input.documentId,
-      pageNumber: input.page.pageNumber,
-      pageMode: input.page.mode,
-      textItems
-    };
+    const requestBody = buildExtractionRequestBody(input);
     const content: OpenAI.Responses.ResponseInputContent[] = [
       {
         type: "input_text",
@@ -144,22 +161,39 @@ export class OfficialOpenAiExtractionAdapter implements OpenAiExtractionAdapter 
   }
 
   async recheckIssue(input: {
-    extraction: ExtractionEnvelope;
     issueCodes: string[];
     allowedFields: string[];
+    lockedFields: string[];
+    fragmentText: string;
+    headerText: string;
+    neighboringRows: string[];
     cropDataUrl?: string;
-  }): Promise<ExtractionEnvelope> {
-    const lockedFields = input.extraction.extraction.offerGroups.flatMap((group) =>
-      group.lines.flatMap((line) => line.lockedFields)
+  }): Promise<TargetedRecheck> {
+    return (await this.recheckIssueWithMetadata(input)).result;
+  }
+
+  async recheckIssueWithMetadata(input: {
+    issueCodes: string[];
+    allowedFields: string[];
+    lockedFields: string[];
+    fragmentText: string;
+    headerText: string;
+    neighboringRows: string[];
+    cropDataUrl?: string;
+  }): Promise<RecheckResult> {
+    const allowedFields = input.allowedFields.filter(
+      (field) => !input.lockedFields.includes(field)
     );
     const content: OpenAI.Responses.ResponseInputContent[] = [
       {
         type: "input_text",
         text: JSON.stringify({
           issueCodes: input.issueCodes,
-          allowedFields: input.allowedFields.filter((field) => !lockedFields.includes(field)),
-          lockedFields,
-          previousExtraction: input.extraction
+          allowedFields,
+          lockedFields: input.lockedFields,
+          fragmentText: input.fragmentText,
+          headerText: input.headerText,
+          neighboringRows: input.neighboringRows
         })
       }
     ];
@@ -171,19 +205,57 @@ export class OfficialOpenAiExtractionAdapter implements OpenAiExtractionAdapter 
       });
     }
 
-    return (
-      await this.runStructured({
+    const startedAt = new Date();
+    const cacheSource = {
+      issueCodes: input.issueCodes,
+      allowedFields,
+      lockedFields: input.lockedFields,
+      fragmentText: input.fragmentText,
+      headerText: input.headerText,
+      neighboringRows: input.neighboringRows
+    };
+    const cacheKey = createExtractionCacheKey({
+      promptVersion: RECHECK_PROMPT_VERSION,
+      schemaVersion: SCHEMA_VERSION,
+      preprocessingVersion: PREPROCESSING_VERSION,
+      model: this.recheckModel,
+      source: cacheSource
+    });
+    const response = await this.semaphore.run(() =>
+      this.client.responses.parse({
         model: this.recheckModel,
-        promptVersion: RECHECK_PROMPT_VERSION,
-        systemPrompt: TARGETED_RECHECK_SYSTEM_PROMPT,
-        content,
-        cacheSource: {
-          issueCodes: input.issueCodes,
-          allowedFields: input.allowedFields,
-          extraction: input.extraction
-        }
+        instructions: TARGETED_RECHECK_SYSTEM_PROMPT,
+        input: [{ role: "user", content }],
+        text: {
+          format: zodTextFormat(TargetedRecheckSchema, "procurement_targeted_recheck")
+        },
+        reasoning: { effort: "low" },
+        max_output_tokens: Math.min(this.maxOutputTokens, 4_000),
+        store: false
       })
-    ).envelope;
+    );
+    const completedAt = new Date();
+    if (!response.output_parsed) throw new Error("OpenAI returned no structured recheck.");
+    return {
+      result: response.output_parsed,
+      metadata: {
+        modelId: this.recheckModel,
+        responseId: response.id ?? null,
+        promptVersion: RECHECK_PROMPT_VERSION,
+        schemaVersion: SCHEMA_VERSION,
+        preprocessingVersion: PREPROCESSING_VERSION,
+        inputTokens: response.usage?.input_tokens ?? null,
+        outputTokens: response.usage?.output_tokens ?? null,
+        cachedTokens: response.usage?.input_tokens_details?.cached_tokens ?? null,
+        durationMs: completedAt.getTime() - startedAt.getTime(),
+        attempt: 1,
+        estimatedCostUsd: null,
+        error: null,
+        startedAt: startedAt.toISOString(),
+        completedAt: completedAt.toISOString(),
+        cacheKey
+      }
+    };
   }
 
   async extractBasisPageWithMetadata(input: {
@@ -191,17 +263,7 @@ export class OfficialOpenAiExtractionAdapter implements OpenAiExtractionAdapter 
     page: ParsedPage;
     pageImageDataUrl?: string;
   }): Promise<ExtractionResult> {
-    const requestBody = {
-      documentId: input.documentId,
-      pageNumber: input.page.pageNumber,
-      pageMode: input.page.mode,
-      textItems: input.page.textItems.map((item) => ({
-        id: item.id,
-        text: item.rawText,
-        order: item.order,
-        region: item.region
-      }))
-    };
+    const requestBody = buildExtractionRequestBody(input);
     const content: OpenAI.Responses.ResponseInputContent[] = [
       { type: "input_text", text: JSON.stringify(requestBody) }
     ];
@@ -245,7 +307,9 @@ export class OfficialOpenAiExtractionAdapter implements OpenAiExtractionAdapter 
         text: {
           format: zodTextFormat(ExtractionEnvelopeSchema, "procurement_page_extraction")
         },
-        max_output_tokens: this.maxOutputTokens
+        reasoning: { effort: "low" },
+        max_output_tokens: this.maxOutputTokens,
+        store: false
       });
       const completedAt = new Date();
 

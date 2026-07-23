@@ -41,7 +41,7 @@ export const basisPosition: BasisPosition = {
   description: "Hocheffizienz-Umwälzpumpe",
   quantity: 3,
   unit: "Stk",
-  technicalAttributes: {},
+  technicalAttributes: [],
   manufacturerRequirements: [],
   requiredScope: ["Pumpe"],
   notes: [],

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArrowRight,
   Check,
@@ -29,6 +29,8 @@ import {
 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/status-badge";
+import type { EvidenceReference, OfferLine } from "@/domain/contracts";
+import type { ValidationIssue } from "@/domain/validation";
 import {
   comparisonRows,
   documents,
@@ -50,6 +52,42 @@ export const sectionNames = [
 ] as const;
 export type SectionName = (typeof sectionNames)[number] | "projektuebersicht";
 
+type PilotReviewActionView = {
+  id: string;
+  runId: string;
+  issueId: string;
+  lineId: string;
+  field: string;
+  action: string;
+  newValue: unknown;
+  verificationStatus: OfferLine["verificationStatus"];
+};
+
+type PilotRunView = {
+  id: string;
+  document: {
+    relativePath: string;
+    pageNumber: number;
+    pageCount: number;
+    documentType: string;
+  };
+  result: {
+    envelope: {
+      extraction: {
+        offerGroups: Array<{ lines: OfferLine[] }>;
+      };
+    };
+  };
+  validationIssues: ValidationIssue[];
+  pageImageAsset: string;
+};
+
+type PilotStateView = {
+  version: 1;
+  runs: PilotRunView[];
+  reviewActions: PilotReviewActionView[];
+};
+
 const Button = ({
   children,
   kind = "primary",
@@ -65,6 +103,78 @@ const Button = ({
     {children}
   </button>
 );
+
+function usePilotState() {
+  const [pilot, setPilot] = useState<PilotStateView | null>();
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchPilot = useCallback(async (): Promise<PilotStateView | null> => {
+    const health = await fetch("/api/health", { cache: "no-store" });
+    const healthData = (await health.json()) as { mode?: string };
+    if (healthData.mode !== "local-corpus") return null;
+    const response = await fetch("/api/local/corpus?view=pilot", { cache: "no-store" });
+    if (!response.ok) throw new Error(`Pilot API returned ${response.status}.`);
+    return (await response.json()) as PilotStateView;
+  }, []);
+
+  const load = useCallback(async () => {
+    const next = await fetchPilot();
+    setPilot(next);
+    setError(null);
+  }, [fetchPilot]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchPilot()
+      .then((next) => {
+        if (!cancelled) {
+          setPilot(next);
+          setError(null);
+        }
+      })
+      .catch((loadError: unknown) => {
+        if (!cancelled) {
+          setError(
+            loadError instanceof Error
+              ? loadError.message
+              : "Pilotdaten konnten nicht geladen werden."
+          );
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchPilot]);
+
+  return { pilot, error, reload: load };
+}
+
+function reviewedLine(
+  line: OfferLine,
+  runId: string,
+  actions: PilotReviewActionView[]
+): OfferLine {
+  return actions
+    .filter((action) => action.runId === runId && action.lineId === line.id)
+    .reduce((current, action) => {
+      if (action.action === "DEFER") return current;
+      return {
+        ...current,
+        [action.field]: action.newValue,
+        verificationStatus: action.verificationStatus,
+        lockedFields: Array.from(new Set([...current.lockedFields, action.field]))
+      } as OfferLine;
+    }, line);
+}
+
+function formatNumber(value: number | null): string {
+  return value === null
+    ? "—"
+    : new Intl.NumberFormat("de-DE", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+      }).format(value);
+}
 
 function Overview() {
   return (
@@ -216,42 +326,410 @@ function Documents() {
 
 function FoundData() {
   const [role, setRole] = useState("Alle Rollen");
-  const rows = role === "Alle Rollen" ? extractedLines : extractedLines.filter((line) => line.role === role);
+  const { pilot, error } = usePilotState();
+  const realRows = useMemo(
+    () =>
+      pilot?.runs
+        .filter((run) => run.document.documentType !== "BASIS_LV")
+        .flatMap((run) =>
+          run.result.envelope.extraction.offerGroups.flatMap((group) =>
+            group.lines.map((line) => ({
+              run,
+              line: reviewedLine(line, run.id, pilot.reviewActions)
+            }))
+          )
+        ) ?? [],
+    [pilot]
+  );
+  const visibleRealRows =
+    role === "Alle Rollen"
+      ? realRows
+      : realRows.filter(({ line }) => line.role === role);
+  const syntheticRows =
+    role === "Alle Rollen" ? extractedLines : extractedLines.filter((line) => line.role === role);
+  const isLocal = pilot !== null;
   return (
     <>
       <PageHeader
         eyebrow="GEFUNDENE DATEN"
         title="Unabhängige Extraktion"
         description="Unveränderte Angebotsdaten vor LV-Zuordnung und kommerzieller Entscheidung."
-        actions={<Button kind="secondary"><Play size={16} /> Extraktion starten</Button>}
+        actions={
+          <Button kind="secondary" disabled={isLocal}>
+            <Play size={16} /> {isLocal ? "Lokaler Pilot aktiv" : "Extraktion starten"}
+          </Button>
+        }
       />
       <div className="notice">
         <ShieldCheck size={19} />
-        <div><strong>Blind extraction aktiv</strong><span>Lieferantenangebote wurden ohne Basis-LV und historischen Gewinner analysiert.</span></div>
+        <div>
+          <strong>Blind extraction aktiv</strong>
+          <span>
+            {isLocal
+              ? "Persistierte lokale OpenAI-Runs; Supplier-Requests enthalten kein Basis-LV."
+              : "Lieferantenangebote wurden ohne Basis-LV und historischen Gewinner analysiert."}
+          </span>
+        </div>
       </div>
+      {error ? <div className="info-strip"><CircleAlert size={16} /><span>{error}</span></div> : null}
       <div className="toolbar">
         <select value={role} onChange={(event) => setRole(event.target.value)}>
-          <option>Alle Rollen</option><option>PRIMARY</option><option>INCLUDED_ACCESSORY</option><option>UNKNOWN</option>
+          <option>Alle Rollen</option>
+          <option>PRIMARY</option>
+          <option>REQUIRED_COMPONENT</option>
+          <option>OPTIONAL</option>
+          <option>ALTERNATIVE</option>
+          <option>NOT_OFFERED</option>
+          <option>UNKNOWN</option>
         </select>
-        <span className="toolbar-count">{rows.length} Angebotszeilen</span>
+        <span className="toolbar-count">
+          {isLocal ? visibleRealRows.length : syntheticRows.length} Angebotszeilen
+        </span>
       </div>
       <section className="panel">
         <div className="table-scroll">
           <table>
-            <thead><tr><th>Quelle</th><th>Pos.</th><th>Beschreibung</th><th>Menge</th><th>Rolle</th><th>EP</th><th>GP</th><th>Evidence</th></tr></thead>
-            <tbody>{rows.map((line) => <tr key={`${line.source}-${line.position}`}>
-              <td><strong>{line.source}</strong></td><td>{line.position}</td><td>{line.description}</td>
-              <td>{line.quantity} {line.unit}</td><td><span className="mono-label">{line.role}</span></td>
-              <td>{line.ep}</td><td><strong>{line.gp}</strong></td><td><StatusBadge>{line.evidence}</StatusBadge></td>
-            </tr>)}</tbody>
+            <thead>
+              <tr>
+                <th>Seite</th><th>Position</th><th>Beschreibung</th><th>Hersteller</th>
+                <th>Artikelnummer</th><th>Menge</th><th>Einheit</th><th>EP</th><th>GP</th>
+                <th>Rolle</th><th>Prüfung</th>
+              </tr>
+            </thead>
+            <tbody>
+              {isLocal
+                ? visibleRealRows.map(({ run, line }) => (
+                    <tr key={`${run.id}-${line.id}`} data-pilot-line={line.id}>
+                      <td><strong>{run.document.pageNumber}</strong></td>
+                      <td>{line.sourcePositionNumber ?? line.supplierPositionNumber ?? "—"}</td>
+                      <td>{line.description || "—"}</td>
+                      <td>{line.manufacturer ?? "—"}</td>
+                      <td>{line.articleNumber ?? "—"}</td>
+                      <td>{line.quantity === null ? "—" : formatNumber(line.quantity)}</td>
+                      <td>{line.unit ?? "—"}</td>
+                      <td>{formatNumber(line.interpretedUnitPrice)}</td>
+                      <td><strong>{formatNumber(line.interpretedTotalPrice)}</strong></td>
+                      <td><span className="mono-label">{line.role}</span></td>
+                      <td><StatusBadge>{line.verificationStatus}</StatusBadge></td>
+                    </tr>
+                  ))
+                : syntheticRows.map((line) => (
+                    <tr key={`${line.source}-${line.position}`}>
+                      <td><strong>{line.source}</strong></td><td>{line.position}</td>
+                      <td>{line.description}</td><td>—</td><td>—</td><td>{line.quantity}</td>
+                      <td>{line.unit}</td><td>{line.ep}</td><td><strong>{line.gp}</strong></td>
+                      <td><span className="mono-label">{line.role}</span></td>
+                      <td><StatusBadge>{line.evidence}</StatusBadge></td>
+                    </tr>
+                  ))}
+            </tbody>
           </table>
         </div>
+        {isLocal && visibleRealRows.length === 0 ? (
+          <div className="empty-state">Noch keine persistierten Supplier-Zeilen. Pilot-Extraction lokal ausführen.</div>
+        ) : null}
       </section>
     </>
   );
 }
 
+function RealReview({
+  pilot,
+  reload
+}: {
+  pilot: PilotStateView;
+  reload: () => Promise<void>;
+}) {
+  const queue = useMemo(
+    () =>
+      pilot.runs
+        .filter((run) => run.document.documentType !== "BASIS_LV")
+        .flatMap((run) =>
+          run.validationIssues.map((issue) => {
+            const offerLines = run.result.envelope.extraction.offerGroups.flatMap(
+              (group) => group.lines
+            );
+            const immutableLine =
+              offerLines.find((line) => line.id === issue.lineId) ?? offerLines[0];
+            return {
+              id: `${run.id}:${issue.id}`,
+              run,
+              issue,
+              line: immutableLine
+                ? reviewedLine(immutableLine, run.id, pilot.reviewActions)
+                : undefined
+            };
+          })
+        )
+        .sort((left, right) => {
+          const actionable = Number(Boolean(right.line)) - Number(Boolean(left.line));
+          if (actionable !== 0) return actionable;
+          return (
+            Number(right.issue.severity === "BLOCKING") -
+            Number(left.issue.severity === "BLOCKING")
+          );
+        }),
+    [pilot]
+  );
+  const [selectedId, setSelectedId] = useState(queue[0]?.id ?? "");
+  const selected = queue.find((item) => item.id === selectedId) ?? queue[0];
+  const [zoom, setZoom] = useState(100);
+  const [message, setMessage] = useState("");
+  const [correctionField, setCorrectionField] = useState(
+    queue[0]?.issue.field && queue[0]?.line && queue[0].issue.field in queue[0].line
+      ? queue[0].issue.field
+      : "description"
+  );
+  const [correctionValue, setCorrectionValue] = useState(queue[0]?.line?.description ?? "");
+  const [roleValue, setRoleValue] = useState<OfferLine["role"]>(
+    queue[0]?.line?.role ?? "UNKNOWN"
+  );
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionState, setActionState] = useState<string | null>(null);
+
+  function selectQueueItem(item: (typeof queue)[number]) {
+    setSelectedId(item.id);
+    if (!item.line) return;
+    setCorrectionField(
+      item.issue.field && item.issue.field in item.line
+        ? item.issue.field
+        : "description"
+    );
+    setCorrectionValue(item.line.description);
+    setRoleValue(item.line.role);
+  }
+
+  if (!selected) {
+    return (
+      <>
+        <PageHeader
+          eyebrow="PRÜFUNG"
+          title="Quellenbasierte Prüfung"
+          description="Persistierte lokale Extraktion und Quellenbelege."
+        />
+        <section className="panel empty-state">
+          Keine offenen ReviewIssues im lokalen Pilotlauf.
+        </section>
+      </>
+    );
+  }
+
+  const evidence: EvidenceReference | undefined =
+    selected.line?.evidence[0] ??
+    selected.line?.moneyCandidates.flatMap((candidate) => candidate.evidence)[0];
+  const moneyCandidates = selected.line?.moneyCandidates ?? [];
+
+  async function submitAction(
+    action: "CONFIRM" | "CORRECT" | "SELECT_VALUE" | "CHANGE_ROLE" | "DEFER",
+    field: string,
+    newValue: unknown
+  ) {
+    if (!selected.line) return;
+    setActionError(null);
+    const response = await fetch("/api/review-actions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        runId: selected.run.id,
+        issueId: selected.issue.id,
+        lineId: selected.line.id,
+        field,
+        action,
+        newValue,
+        operator: "LOCAL_OPERATOR",
+        reason: "Quellenbasierte Pilotprüfung",
+        comment: message
+      })
+    });
+    const body = (await response.json()) as { error?: string; message?: string };
+    if (!response.ok) {
+      setActionError(body.message ?? body.error ?? `Aktion fehlgeschlagen (${response.status}).`);
+      return;
+    }
+    setActionState(action);
+    setMessage("");
+    await reload();
+  }
+
+  function correctedValue(): unknown {
+    if (
+      ["quantity", "interpretedUnitPrice", "interpretedTotalPrice", "priceBasis"].includes(
+        correctionField
+      )
+    ) {
+      const parsed = Number(correctionValue.replace(/\./g, "").replace(",", "."));
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    return correctionValue;
+  }
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="PRÜFUNG"
+        title="Quellenbasierte Prüfung"
+        description="Reale Pilotdaten, lokale Originalseite und dauerhaft gespeicherte Operatoraktionen."
+        actions={<span className="queue-counter">{queue.length} Hinweise</span>}
+      />
+      <div className="review-layout" data-pilot-review={selected.run.id}>
+        <aside className="issue-queue panel">
+          <div className="queue-title"><strong>Prüfliste</strong><span>{queue.length}</span></div>
+          {queue.map((item) => (
+            <button
+              key={item.id}
+              onClick={() => selectQueueItem(item)}
+              className={item.id === selected.id ? "selected" : ""}
+            >
+              <span className={`severity-dot severity-${item.issue.severity.toLowerCase()}`} />
+              <div>
+                <strong>{item.issue.code}</strong>
+                <small>{item.run.document.relativePath} · S. {item.run.document.pageNumber}</small>
+              </div>
+              {pilot.reviewActions.some((action) => action.issueId === item.issue.id) ? (
+                <CheckCircle2 size={16} className="resolved-icon" />
+              ) : null}
+            </button>
+          ))}
+        </aside>
+        <section className="document-viewer panel">
+          <div className="viewer-toolbar">
+            <div>
+              <button className="icon-button" disabled><ChevronLeft size={17} /></button>
+              <span>Seite {selected.run.document.pageNumber} / {selected.run.document.pageCount}</span>
+              <button className="icon-button" disabled><ChevronRight size={17} /></button>
+            </div>
+            <div>
+              <button className="icon-button" onClick={() => setZoom(Math.max(70, zoom - 10))}><ZoomOut size={17} /></button>
+              <span>{zoom} %</span>
+              <button className="icon-button" onClick={() => setZoom(Math.min(150, zoom + 10))}><ZoomIn size={17} /></button>
+            </div>
+          </div>
+          <div className="paper-stage real-page-stage">
+            <div className="real-page-frame" style={{ transform: `scale(${zoom / 100})` }}>
+              {/* The asset API allows only paths referenced by the persisted pilot state. */}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={`/api/local/corpus?asset=${encodeURIComponent(selected.run.pageImageAsset)}`}
+                alt={`${selected.run.document.relativePath}, Seite ${selected.run.document.pageNumber}`}
+              />
+              {evidence ? (
+                <span
+                  className="real-evidence-highlight"
+                  data-evidence-status={evidence.status}
+                  style={{
+                    left: `${evidence.region.x * 100}%`,
+                    top: `${evidence.region.y * 100}%`,
+                    width: `${evidence.region.width * 100}%`,
+                    height: `${evidence.region.height * 100}%`
+                  }}
+                />
+              ) : null}
+            </div>
+          </div>
+        </section>
+        <aside className="issue-inspector panel">
+          <div className="inspector-head">
+            <StatusBadge>{selected.issue.severity}</StatusBadge>
+            <span className="mono-label">{selected.issue.code}</span>
+          </div>
+          <h2>{selected.issue.message}</h2>
+          <p>{selected.run.document.relativePath} · Seite {selected.run.document.pageNumber}</p>
+          <button className="source-button" onClick={() => setZoom(100)}>
+            <Eye size={16} /> Zur Quelle <span>Seite {selected.run.document.pageNumber}</span>
+          </button>
+          <div className="field-card">
+            <label>{selected.issue.field ?? "OfferLine"}</label>
+            <strong>{selected.line ? String(
+              (selected.line as unknown as Record<string, unknown>)[selected.issue.field ?? "description"] ?? "—"
+            ) : "—"}</strong>
+            <small>{selected.line?.verificationStatus ?? "REVIEW_REQUIRED"}</small>
+          </div>
+          {evidence ? (
+            <div className="evidence-summary">
+              <span className="mono-label">{evidence.status}</span>
+              <p>{evidence.sourceText || "Kein serverbestätigter Quelltext."}</p>
+            </div>
+          ) : null}
+          <div className="candidate-block">
+            <label>Money candidates</label>
+            {moneyCandidates.length === 0 ? <p className="muted-copy">Keine Geldwerte erkannt.</p> : null}
+            {moneyCandidates.map((candidate) => (
+              <button
+                key={candidate.id}
+                onClick={() =>
+                  void submitAction(
+                    "SELECT_VALUE",
+                    candidate.kind === "UNIT_PRICE"
+                      ? "interpretedUnitPrice"
+                      : "interpretedTotalPrice",
+                    candidate.amount
+                  )
+                }
+              >
+                <span>{candidate.kind}: {candidate.rawValue}</span>
+                <small>Anderen Wert auswählen</small>
+              </button>
+            ))}
+          </div>
+          <div className="correction-grid">
+            <select value={correctionField} onChange={(event) => setCorrectionField(event.target.value)}>
+              <option value="description">Beschreibung</option>
+              <option value="quantity">Menge</option>
+              <option value="unit">Einheit</option>
+              <option value="interpretedUnitPrice">EP</option>
+              <option value="interpretedTotalPrice">GP</option>
+            </select>
+            <input
+              aria-label="Korrekturwert"
+              value={correctionValue}
+              onChange={(event) => setCorrectionValue(event.target.value)}
+            />
+            <Button kind="secondary" onClick={() => void submitAction("CORRECT", correctionField, correctedValue())}>
+              Korrigieren
+            </Button>
+          </div>
+          <div className="role-control">
+            <select value={roleValue} onChange={(event) => setRoleValue(event.target.value as OfferLine["role"])}>
+              {["PRIMARY", "REQUIRED_COMPONENT", "OPTIONAL", "ALTERNATIVE", "NOT_OFFERED", "UNKNOWN"].map((role) => (
+                <option key={role}>{role}</option>
+              ))}
+            </select>
+            <Button kind="secondary" onClick={() => void submitAction("CHANGE_ROLE", "role", roleValue)}>
+              Rolle ändern
+            </Button>
+          </div>
+          <label className="comment-field">
+            <span>Kommentar</span>
+            <textarea value={message} onChange={(event) => setMessage(event.target.value)} />
+          </label>
+          <div className="review-actions">
+            <Button kind="secondary" onClick={() => void submitAction("DEFER", "description", selected.line?.description)}>
+              Zurückstellen
+            </Button>
+            <Button onClick={() => void submitAction("CONFIRM", "description", selected.line?.description)}>
+              {actionState === "CONFIRM" ? <Check size={16} /> : null} Bestätigen
+            </Button>
+          </div>
+          {actionError ? <p className="action-error">{actionError}</p> : null}
+          <div className="audit-note"><History size={15} /> ReviewAction und AuditEvent werden lokal persistiert.</div>
+        </aside>
+      </div>
+    </>
+  );
+}
+
 function Review() {
+  const { pilot, error, reload } = usePilotState();
+  if (error) {
+    return <section className="panel empty-state">{error}</section>;
+  }
+  if (pilot === undefined) {
+    return <section className="panel empty-state">Pilotdaten werden geladen…</section>;
+  }
+  return pilot === null ? <SyntheticReview /> : <RealReview pilot={pilot} reload={reload} />;
+}
+
+function SyntheticReview() {
   const [selectedId, setSelectedId] = useState(issues[0].id);
   const [page, setPage] = useState(12);
   const [zoom, setZoom] = useState(100);

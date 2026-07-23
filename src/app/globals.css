@@ -218,6 +218,12 @@ tbody tr:hover { background: #fafcff; }
 .viewer-toolbar { height: 44px; background: #fff; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; padding: 0 10px; }
 .viewer-toolbar > div { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 10px; }
 .paper-stage { height: calc(100% - 44px); padding: 25px; overflow: auto; display: grid; place-items: start center; }
+.real-page-stage { display: block; }
+.real-page-frame { width: min(100%, 760px); margin: 0 auto; position: relative; transform-origin: top center; transition: transform .15s; box-shadow: 0 2px 12px rgba(35, 51, 73, .14); }
+.real-page-frame img { width: 100%; height: auto; display: block; background: #fff; }
+.real-evidence-highlight { position: absolute; z-index: 2; border: 2px solid var(--orange); background: rgba(229, 136, 59, .18); box-shadow: 0 0 0 2px rgba(255, 255, 255, .7); pointer-events: none; }
+.real-evidence-highlight[data-evidence-status="CONFLICTING"],
+.real-evidence-highlight[data-evidence-status="MISSING"] { border-color: var(--danger); background: rgba(196, 72, 59, .16); }
 .paper { width: 560px; height: 760px; transform-origin: top center; background: #fff; box-shadow: 0 2px 12px rgba(35, 51, 73, .12); padding: 48px 45px; position: relative; color: #253044; font-family: Arial, sans-serif; transition: transform .15s; }
 .paper-head, .paper-meta { display: flex; justify-content: space-between; }
 .paper-head { font-size: 10px; color: var(--blue); }
@@ -258,6 +264,13 @@ tbody tr:hover { background: #fafcff; }
 .comment-field textarea { min-height: 62px; resize: vertical; }
 .review-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
 .audit-note { color: var(--muted); font-size: 9px; display: flex; align-items: center; gap: 5px; margin-top: 10px; }
+.evidence-summary { margin-top: 12px; padding: 10px; border: 1px solid var(--border); background: #f8fafc; border-radius: 4px; }
+.evidence-summary p, .muted-copy { margin: 7px 0 0; color: var(--muted); font-size: 9px; line-height: 1.45; }
+.correction-grid { display: grid; grid-template-columns: 1fr; gap: 6px; padding-top: 12px; margin-top: 12px; border-top: 1px solid var(--border); }
+.correction-grid select, .correction-grid input, .role-control select { min-height: 34px; border: 1px solid var(--border-strong); border-radius: 4px; padding: 0 8px; background: #fff; font-size: 10px; }
+.role-control { display: grid; grid-template-columns: 1fr auto; gap: 7px; margin: 10px 0; }
+.action-error { color: var(--danger); font-size: 9px; line-height: 1.4; margin: 8px 0 0; }
+.empty-state { padding: 30px; color: var(--muted); text-align: center; font-size: 11px; }
 
 .score { width: 80px; position: relative; height: 25px; background: #edf1f5; border-radius: 3px; overflow: hidden; }
 .score i { display: block; height: 100%; background: #dce6f7; }

@@ -43,6 +43,7 @@ export type EvidenceStatus = z.infer<typeof EvidenceStatusSchema>;
 export const VerificationStatusSchema = z.enum([
   "MACHINE_VALIDATED",
   "NEEDS_REVIEW",
+  "REVIEW_REQUIRED",
   "HUMAN_CONFIRMED",
   "HUMAN_CORRECTED"
 ]);
@@ -146,6 +147,22 @@ export const OfferGroupSchema = z.object({
   evidence: z.array(EvidenceReferenceSchema)
 });
 
+export const DocumentMetadataCandidateSchema = z.object({
+  id: z.string(),
+  field: z.string(),
+  value: z.string(),
+  confidence: z.number().min(0).max(1),
+  evidence: z.array(EvidenceReferenceSchema)
+});
+
+export const ExtractedSectionSchema = z.object({
+  id: z.string(),
+  parentId: z.string().nullable(),
+  label: z.string(),
+  kind: z.enum(["HEADING", "TABLE", "OFFER_GROUP", "BASIS_GROUP", "NOTE", "UNKNOWN"]),
+  evidence: z.array(EvidenceReferenceSchema)
+});
+
 export const BasisPositionSchema = z.object({
   id: z.string(),
   documentId: z.string(),
@@ -154,7 +171,12 @@ export const BasisPositionSchema = z.object({
   description: z.string(),
   quantity: z.number().nullable(),
   unit: z.string().nullable(),
-  technicalAttributes: z.record(z.string(), z.string()),
+  technicalAttributes: z.array(
+    z.object({
+      name: z.string(),
+      value: z.string()
+    })
+  ),
   manufacturerRequirements: z.array(z.string()),
   requiredScope: z.array(z.string()),
   notes: z.array(z.string()),
@@ -171,6 +193,8 @@ export const PageExtractionSchema = z.object({
   pageMode: PageModeSchema,
   documentType: DocumentTypeSchema,
   discipline: DisciplineSchema,
+  documentMetadataCandidates: z.array(DocumentMetadataCandidateSchema),
+  sections: z.array(ExtractedSectionSchema),
   offerGroups: z.array(OfferGroupSchema),
   basisPositions: z.array(BasisPositionSchema),
   unresolvedNotes: z.array(z.string())
@@ -258,6 +282,19 @@ export const ExtractionEnvelopeSchema = z.object({
   extraction: PageExtractionSchema
 });
 export type ExtractionEnvelope = z.infer<typeof ExtractionEnvelopeSchema>;
+
+export const TargetedRecheckSchema = z.object({
+  changes: z.array(
+    z.object({
+      field: z.string(),
+      value: z.union([z.string(), z.number(), z.boolean(), z.null()]),
+      evidence: z.array(EvidenceReferenceSchema)
+    })
+  ),
+  unresolvedNotes: z.array(z.string()),
+  humanReviewRequired: z.boolean()
+});
+export type TargetedRecheck = z.infer<typeof TargetedRecheckSchema>;
 
 export const PROMPT_VERSION = "supplier-page-extraction-v1";
 export const BASIS_PROMPT_VERSION = "basis-page-extraction-v1";

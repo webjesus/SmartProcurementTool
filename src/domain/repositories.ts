@@ -2,7 +2,8 @@ import type {
   CompanyRuleSchema,
   EvidenceReference,
   ExtractionEnvelope,
-  MatchLink
+  MatchLink,
+  TargetedRecheck
 } from "@/domain/contracts";
 import type { z } from "zod";
 
@@ -40,11 +41,14 @@ export interface OpenAiExtractionAdapter {
     pageImageDataUrl?: string;
   }): Promise<ExtractionEnvelope>;
   recheckIssue(input: {
-    extraction: ExtractionEnvelope;
     issueCodes: string[];
     allowedFields: string[];
+    lockedFields: string[];
+    fragmentText: string;
+    headerText: string;
+    neighboringRows: string[];
     cropDataUrl?: string;
-  }): Promise<ExtractionEnvelope>;
+  }): Promise<TargetedRecheck>;
 }
 
 export interface ProjectRepository {

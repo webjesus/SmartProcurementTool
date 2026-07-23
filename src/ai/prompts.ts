@@ -19,6 +19,12 @@ Evidence:
 - Never invent a text item ID.
 - Preserve source wording in sourceText.
 - For visual-only evidence, provide a normalized 0..1 region and use VISUAL_ONLY_UNCONFIRMED unless the image is unambiguous.
+- On SCAN pages no text item IDs exist: cite exact visible text and a tight normalized region.
+
+Structure:
+- Return document metadata candidates and page sections before offer groups.
+- Keep confidence on metadata candidates explicit.
+- For a blank printed price field, return null; never turn it into zero.
 
 Rows and money:
 - Return every visible money candidate, including optional and component prices.
@@ -38,7 +44,8 @@ Constraints:
 - Change only fields explicitly listed in allowedFields.
 - Do not change human-confirmed or human-corrected fields.
 - This is the only semantic recheck. Remaining ambiguity must go to HUMAN_REVIEW.
-- Preserve all unrelated extraction values and evidence.
+- Use only the supplied fragment/crop, header and neighboring rows.
+- Preserve all unrelated extraction values and evidence; do not reconstruct the full document.
 `.trim();
 
 export const BASIS_EXTRACTION_SYSTEM_PROMPT = `
@@ -53,6 +60,7 @@ Rules:
 - Every important number must cite existing text item IDs and a normalized region.
 - Never invent missing values or text item IDs.
 - Keep page continuation ambiguity explicit in unresolvedNotes.
+- Return document metadata candidates and structural sections.
 - Return offerGroups as an empty array and place requirements in basisPositions.
 `.trim();
 

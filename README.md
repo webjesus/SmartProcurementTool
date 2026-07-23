@@ -26,11 +26,17 @@ For local corpus access set `LOCAL_CORPUS_ENABLED=true`. `OPENAI_API_KEY` is nee
 | `npm run lint` | ESLint |
 | `npm run test` | unit and integration tests |
 | `npm run test:e2e` | Playwright browser workflow |
+| `npm run openai:models` | verify `.env.local` account access and select the strongest compatible model |
 | `npm run corpus:scan` | local PDF inventory; never calls OpenAI |
 | `npm run corpus:process -- --dry-run --limit=8` | local processing plan without OpenAI |
 | `npm run corpus:process -- --document=<id-or-name> --limit=2` | selected-page OpenAI processing |
 
 `corpus:process` requires one explicit document selection, honors the page limit, caches completed page runs, excludes historical result documents, and never reuses them as extraction hints.
+
+Pilot runs, evidence crops, review actions and audit events are stored under the
+gitignored `.data/` directory. `Gefundene Daten` and `Prüfung` read that durable
+local state only when `LOCAL_CORPUS_ENABLED=true`; CI continues to use fake data
+and never calls OpenAI.
 
 ## Application structure
 

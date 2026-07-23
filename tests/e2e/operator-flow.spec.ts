@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+const realPilot = process.env.SPT_REAL_PILOT === "true";
+
 function watchRuntimeFailures(page: import("@playwright/test").Page) {
   const failures: string[] = [];
 
@@ -24,6 +26,7 @@ function watchRuntimeFailures(page: import("@playwright/test").Page) {
 }
 
 test("synthetic operator flow from overview to export", async ({ page }, testInfo) => {
+  test.skip(realPilot, "Synthetic flow is replaced by persisted pilot data in local-corpus mode.");
   const runtimeFailures = watchRuntimeFailures(page);
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Projekt Nordtor" })).toBeVisible();
@@ -63,6 +66,45 @@ test("synthetic operator flow from overview to export", async ({ page }, testInf
   await page.getByRole("link", { name: /XLSX erstellen/ }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toBe("SPT-LV-Vergleich.xlsx");
+  expect(runtimeFailures).toEqual([]);
+});
+
+test("persisted real pilot review survives reload", async ({ page }, testInfo) => {
+  test.skip(!realPilot, "Requires LOCAL_CORPUS_ENABLED and persisted pilot runs.");
+  test.skip(testInfo.project.name !== "chromium", "One durable operator write is sufficient.");
+  const runtimeFailures = watchRuntimeFailures(page);
+
+  await page.goto("/gefundene-daten");
+  const firstRealRow = page.locator("[data-pilot-line]").first();
+  await expect(firstRealRow).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("real-gefundene-daten.png"),
+    fullPage: true
+  });
+
+  await page.goto("/pruefung");
+  await expect(page.locator("[data-pilot-review]")).toBeVisible();
+  await expect(page.locator(".real-page-frame img")).toBeVisible();
+  await expect(page.locator(".real-evidence-highlight")).toBeVisible();
+  await page.getByRole("button", { name: /Zur Quelle/ }).click();
+  await expect(page.getByText(/Seite 25 \/ 56/)).toBeVisible();
+
+  const correction = page.getByLabel("Korrekturwert");
+  if ((await correction.inputValue()) !== "Operator geprüft") {
+    await correction.fill("Operator geprüft");
+    await page.getByRole("button", { name: "Korrigieren" }).click();
+    await expect(correction).toHaveValue("Operator geprüft");
+  }
+  await page.reload();
+  await expect(page.getByLabel("Korrekturwert")).toHaveValue("Operator geprüft");
+  await expect(page.getByText("HUMAN_CORRECTED")).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("real-pruefung-corrected.png"),
+    fullPage: true
+  });
+
+  await page.goto("/gefundene-daten");
+  await expect(page.getByText("Operator geprüft")).toBeVisible();
   expect(runtimeFailures).toEqual([]);
 });
 
