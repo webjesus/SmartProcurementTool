@@ -14,6 +14,7 @@ export default defineConfig([
     ".data/**",
     "storage/**",
     "tmp/**",
-    "pdffirma/**"
+    "pdffirma/**",
+    ".postgres-local/**"
   ])
 ]);

@@ -1,5 +1,5 @@
-import { SectionView } from "@/components/section-view";
+import { ProjectStartPage } from "@/components/project-start-page";
 
 export default function OverviewPage() {
-  return <SectionView section="projektuebersicht" />;
+  return <ProjectStartPage />;
 }

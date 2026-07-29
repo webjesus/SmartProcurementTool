@@ -4,9 +4,11 @@ import path from "node:path";
 const root = process.cwd();
 const nextBin = path.join(root, "node_modules", "next", "dist", "bin", "next");
 const playwrightCli = path.join(root, "node_modules", "@playwright", "test", "cli.js");
+const port = process.env.SPT_E2E_PORT ?? "3000";
+const baseUrl = `http://127.0.0.1:${port}`;
 const server = spawn(process.execPath, [nextBin, "start", "--hostname", "127.0.0.1"], {
   cwd: root,
-  env: { ...process.env, PORT: "3000" },
+  env: { ...process.env, PORT: port },
   stdio: ["ignore", "pipe", "pipe"]
 });
 
@@ -20,7 +22,7 @@ async function waitForServer() {
       throw new Error(`Next.js exited before E2E startup with code ${server.exitCode}.`);
     }
     try {
-      const response = await fetch("http://127.0.0.1:3000/api/health");
+      const response = await fetch(`${baseUrl}/api/health`);
       if (response.ok) return;
     } catch {
       // Startup connection failures are expected until the server is ready.
@@ -46,7 +48,11 @@ async function main() {
     await waitForServer();
     const tests = spawn(process.execPath, [playwrightCli, "test", ...process.argv.slice(2)], {
       cwd: root,
-      env: { ...process.env, SPT_E2E_EXTERNAL_SERVER: "true" },
+      env: {
+        ...process.env,
+        SPT_E2E_EXTERNAL_SERVER: "true",
+        SPT_E2E_BASE_URL: baseUrl
+      },
       stdio: "inherit"
     });
     testExitCode = await new Promise<number>((resolve) => {

@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/status-badge";
+import { LvComparisonPage } from "@/components/lv/lv-comparison-page";
 import type {
   BasisPosition,
   EvidenceReference,
@@ -38,6 +39,13 @@ import type {
   SupplierDecision,
   SupplierOption
 } from "@/domain/contracts";
+import {
+  CURRENT_DECISION_REASON_CATALOG,
+  PLACEHOLDER_DECISION_REASON_CODE,
+  activeDecisionReasons
+} from "@/domain/decision-catalog";
+import { decisionEvidenceHref } from "@/domain/decision-source";
+import type { ProjectReviewPosition } from "@/domain/project-review";
 import type { ValidationIssue } from "@/domain/validation";
 import {
   comparisonRows,
@@ -98,7 +106,47 @@ type PilotStateView = {
   reviewActions: PilotReviewActionView[];
   matchReviewActions: MatchReviewAction[];
   supplierDecisions: SupplierDecision[];
+  supplierDecisionReviewActions: Array<{
+    id: string;
+    supplierDecisionId: string;
+    basisPositionId: string;
+    action: string;
+    previousDecisionId: string | null;
+    operator: string;
+    comment: string;
+    timestamp: string;
+  }>;
   analysis: PilotAnalysis | null;
+  documentRevisions: Record<string, string>;
+  projectReview: {
+    positions: ProjectReviewPosition[];
+    invariant: {
+      valid: boolean;
+      totalBasisLeafPositions: number;
+      lvRows: number;
+      statusCount: number;
+      duplicatePositionIds: string[];
+      duplicatePositionNumbers: string[];
+      missingPositionIds: string[];
+      orphanDecisionIds: string[];
+      orphanSupplierOptionIds: string[];
+      unknownStatusPositionIds: string[];
+      problemPositionIds: string[];
+    };
+    coverage: {
+      relevantSupplierDocumentIds: string[];
+      relevantSupplierDocuments: Array<{
+        id: string;
+        label: string;
+        supplier: string;
+      }>;
+      processedSupplierDocumentIds: string[];
+      missingSupplierDocuments: Array<{ id: string; label: string }>;
+      allRelevantOffersProcessed: boolean;
+      projectContextConfirmed: boolean;
+      historicalCalculationAvailable: boolean;
+    };
+  };
 };
 
 const Button = ({
@@ -187,6 +235,10 @@ function formatNumber(value: number | null): string {
         minimumFractionDigits: 2,
         maximumFractionDigits: 2
       }).format(value);
+}
+
+function formatCurrency(value: number | null): string {
+  return value === null ? "—" : `${formatNumber(value)} €`;
 }
 
 function Overview() {
@@ -390,6 +442,7 @@ function FoundData() {
           <option>Alle Rollen</option>
           <option>PRIMARY</option>
           <option>REQUIRED_COMPONENT</option>
+          <option>MANDATORY_COMPONENT</option>
           <option>OPTIONAL</option>
           <option>ALTERNATIVE</option>
           <option>NOT_OFFERED</option>
@@ -703,7 +756,7 @@ function RealReview({
           </div>
           <div className="role-control">
             <select value={roleValue} onChange={(event) => setRoleValue(event.target.value as OfferLine["role"])}>
-              {["PRIMARY", "REQUIRED_COMPONENT", "OPTIONAL", "ALTERNATIVE", "NOT_OFFERED", "UNKNOWN"].map((role) => (
+              {["PRIMARY", "REQUIRED_COMPONENT", "MANDATORY_COMPONENT", "OPTIONAL", "ALTERNATIVE", "NOT_OFFERED", "UNKNOWN"].map((role) => (
                 <option key={role}>{role}</option>
               ))}
             </select>
@@ -879,6 +932,50 @@ const filterOptions = [
   ["Kein Angebot", "NO_OFFER"]
 ] as const;
 
+const liveFilterOptions = [
+  ["Alle", "ALL"],
+  ["Automatisch ausgewählt", "AUTO_SELECTED_LOWEST_PRICE"],
+  ["Entscheidung durch Leitung", "MANAGER_DECISION"],
+  ["Systemprüfung", "SYSTEM_REVIEW"],
+  ["Manuell entschieden", "MANUAL_DECIDED"],
+  ["Zurückgestellt", "DEFERRED"],
+  ["Kein vergleichbares Angebot", "NO_COMPARABLE_OFFER"],
+  ["Verarbeitung ausstehend", "PROCESSING_PENDING"],
+  ["Fehler", "PROCESSING_ERROR"]
+] as const;
+
+function liveFilterMatches(
+  position: ProjectReviewPosition,
+  filter: string
+): boolean {
+  if (filter === "ALL") return true;
+  if (filter === "MANAGER_DECISION" || filter === "SYSTEM_REVIEW") {
+    return (
+      position.liveStatus === "MANUAL_DECISION_REQUIRED" &&
+      position.reviewQueue === filter
+    );
+  }
+  return position.liveStatus === filter;
+}
+
+function liveStatusLabel(position: ProjectReviewPosition | undefined): string {
+  if (!position) return "Verarbeitung ausstehend";
+  if (position.liveStatus === "MANUAL_DECISION_REQUIRED") {
+    return position.reviewQueue === "MANAGER_DECISION"
+      ? "Entscheidung durch Leitung erforderlich"
+      : "Technische Systemprüfung erforderlich";
+  }
+  const labels: Record<string, string> = {
+    AUTO_SELECTED_LOWEST_PRICE: "Automatisch ausgewählt",
+    MANUAL_DECIDED: "Manuell entschieden",
+    DEFERRED: "Zurückgestellt",
+    NO_COMPARABLE_OFFER: "Kein vergleichbares Angebot",
+    PROCESSING_PENDING: "Verarbeitung ausstehend",
+    PROCESSING_ERROR: "Verarbeitungsfehler"
+  };
+  return labels[position.liveStatus] ?? position.liveStatus;
+}
+
 function SyntheticComparison() {
   const [filter, setFilter] = useState("ALL");
   const [selected, setSelected] = useState(comparisonRows[0].position);
@@ -916,7 +1013,7 @@ function SyntheticComparison() {
           <h3>Lieferantenoptionen</h3>
           {[["Alpha", detail.alpha], ["Beta", detail.beta], ["Gamma", detail.gamma]].map(([name, price]) => <div className="supplier-option" key={name}><span>Lieferant {name}</span><strong>{price}</strong><small>Evidence geprüft</small></div>)}
           <div className="inspector-status"><StatusBadge>{detail.status}</StatusBadge><p>Maschinelle Empfehlung ist keine finale Lieferantenentscheidung.</p></div>
-          <Link href="/entscheidungen" className="button button-primary full">Entscheidung öffnen <ArrowRight size={16} /></Link>
+          <Link href="/lv-vergleich#entscheidungspruefung" className="button button-primary full">Entscheidung öffnen <ArrowRight size={16} /></Link>
         </aside>
       </div>
     </>
@@ -948,28 +1045,62 @@ function SyntheticDecisions() {
   );
 }
 
-function pilotSourceHref(
+function pilotEvidenceHref(
   pilot: PilotStateView,
-  documentId: string,
-  pageNumber: number
+  evidence: EvidenceReference,
+  lineId?: string
 ): string | null {
+  const documentRevisionId = pilot.documentRevisions[evidence.documentId];
   const run = pilot.runs.find(
     (item) =>
-      item.document.id === documentId && item.document.pageNumber === pageNumber
+      item.document.id === evidence.documentId &&
+      item.document.pageNumber === evidence.pageNumber
   );
-  return run
-    ? `/api/local/corpus?asset=${encodeURIComponent(run.pageImageAsset)}`
-    : null;
+  if (!documentRevisionId || !run) return null;
+  return decisionEvidenceHref({
+    documentId: evidence.documentId,
+    documentRevisionId,
+    pageNumber: evidence.pageNumber,
+    evidenceId: evidence.id
+  }, lineId);
+}
+
+function materialScopeLabel(option: SupplierOption): string {
+  const materialScopeStatus = option.materialScopeStatus as
+    | SupplierOption["materialScopeStatus"]
+    | undefined;
+  if (!materialScopeStatus) {
+    if (option.status === "TECHNICAL_DEVIATION") {
+      return "Technische Abweichung";
+    }
+    if (option.status === "NO_OFFER") return "Nicht angeboten";
+    if (option.status === "DIFFERENT_SCOPE_OF_SUPPLY") {
+      return "Unvollständiger Lieferumfang";
+    }
+    return "Prüfung erforderlich";
+  }
+  switch (materialScopeStatus) {
+    case "COMPLETE_MATERIAL_SCOPE":
+      return "Vollständig vergleichbar";
+    case "PARTIAL_MATERIAL_SCOPE":
+      return "Unvollständiger Lieferumfang";
+    case "TECHNICALLY_DEVIATING":
+      return "Technische Abweichung";
+    case "EXPLICIT_NO_OFFER":
+      return "Nicht angeboten";
+    case "NOT_COVERED":
+    case "UNKNOWN":
+    default:
+      return "Prüfung erforderlich";
+  }
 }
 
 function optionDisplay(option: SupplierOption | undefined) {
   if (!option) return "Nicht zugeordnet";
-  if (option.comparableTotal === null) {
-    return option.pricedTotal === null
-      ? option.status.replaceAll("_", " ")
-      : `${formatNumber(option.pricedTotal)} € Material · ${option.status.replaceAll("_", " ")}`;
-  }
-  return `${formatNumber(option.comparableTotal)} €`;
+  const scope = materialScopeLabel(option);
+  return option.pricedTotal === null
+    ? scope
+    : `Preis gefunden: ${formatNumber(option.pricedTotal)} € · ${scope}`;
 }
 
 function optionPriceBreakdown(option: SupplierOption): string {
@@ -982,7 +1113,8 @@ function optionPriceBreakdown(option: SupplierOption): string {
     `Primär ${option.primaryPrice === null ? "—" : `${formatNumber(option.primaryPrice)} €`}`,
     `Pflicht ${option.mandatoryComponentPrices.length ? `${formatNumber(mandatory)} €` : "—"}`,
     `Optional ${option.optionalPrices.length ? `${formatNumber(optional)} €` : "—"}`,
-    `Vergleich ${option.comparableTotal === null ? "nicht freigegeben" : `${formatNumber(option.comparableTotal)} €`}`
+    `Vergleich ${option.comparableTotal === null ? "nicht freigegeben" : `${formatNumber(option.comparableTotal)} €`}`,
+    materialScopeLabel(option)
   ].join(" · ");
 }
 
@@ -1092,10 +1224,10 @@ function RealMatching({
                 const basisEvidence = basis?.evidence[0];
                 const offerEvidence = offer?.line.evidence[0];
                 const basisHref = basisEvidence
-                  ? pilotSourceHref(pilot, basisEvidence.documentId, basisEvidence.pageNumber)
+                  ? pilotEvidenceHref(pilot, basisEvidence)
                   : null;
                 const offerHref = offerEvidence
-                  ? pilotSourceHref(pilot, offerEvidence.documentId, offerEvidence.pageNumber)
+                  ? pilotEvidenceHref(pilot, offerEvidence, offer?.line.id)
                   : null;
                 return <tr key={link.id} className={selected?.id === link.id ? "selected-row" : ""} onClick={() => setSelectedLinkId(link.id)}>
                   <td><strong>{basis?.positionNumber ?? "—"}</strong></td>
@@ -1105,8 +1237,8 @@ function RealMatching({
                   <td><StatusBadge>{link.confirmedByOperator ? "HUMAN_CONFIRMED" : link.status}</StatusBadge></td>
                   <td>{link.reasons.join(" · ") || "Keine belastbare Begründung"}</td>
                   <td><div className="source-links">
-                    {basisHref ? <a href={basisHref} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>Zur Quelle Basis</a> : null}
-                    {offerHref ? <a href={offerHref} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>Zur Quelle Supplier</a> : null}
+                    {basisHref ? <a href={basisHref} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>Zur Basis-Quelle</a> : null}
+                    {offerHref ? <a href={offerHref} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>Zur Angebotsquelle</a> : null}
                   </div></td>
                   <td><Button kind="ghost" disabled={pending || link.confirmedByOperator} onClick={() => submit("CONFIRM_MATCH", link.basisPositionIds, link.offerLineIds, offer?.run.document.id ?? "")}>{link.confirmedByOperator ? <Check size={15} /> : null} Bestätigen</Button></td>
                 </tr>;
@@ -1158,8 +1290,55 @@ function RealComparison({
 }) {
   const analysis = pilot.analysis;
   const [filter, setFilter] = useState("ALL");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [sortMode, setSortMode] = useState<
+    "LV_ORDER" | "UNRESOLVED_FIRST" | "STATUS" | "PRICE_DIFFERENCE"
+  >("LV_ORDER");
   const [selected, setSelected] = useState(analysis?.basisPositions[0]?.id ?? "");
+  const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null);
+  const [reasonCode, setReasonCode] = useState("");
   const [comment, setComment] = useState("");
+  const [decisionError, setDecisionError] = useState<string | null>(null);
+  const [decisionPending, setDecisionPending] = useState(false);
+  const searchIndex = useMemo(() => {
+    if (!analysis) return new Map<string, string>();
+    const offerLines = new Map(
+      pilot.runs.flatMap((run) =>
+        run.result.envelope.extraction.offerGroups.flatMap((group) =>
+          group.lines.map((line) => [line.id, line] as const)
+        )
+      )
+    );
+    return new Map(
+      analysis.basisPositions.map((position) => {
+        const options = analysis.supplierOptions.filter((option) =>
+          option.basisPositionIds.includes(position.id)
+        );
+        return [
+          position.id,
+          [
+            position.positionNumber,
+            position.description,
+            ...options.flatMap((option) => [
+              option.supplierLabel,
+              ...option.matchedOfferLineIds.flatMap((lineId) => {
+                const line = offerLines.get(lineId);
+                return line
+                  ? [
+                      line.description,
+                      line.articleNumber ?? "",
+                      line.manufacturer ?? ""
+                    ]
+                  : [];
+              })
+            ])
+          ]
+            .join(" ")
+            .toLocaleLowerCase("de")
+        ];
+      })
+    );
+  }, [analysis, pilot.runs]);
   if (!analysis) {
     return (
       <>
@@ -1168,25 +1347,101 @@ function RealComparison({
       </>
     );
   }
-  const recommendationIndex = new Map(
-    analysis.recommendations.map((recommendation) => [
-      recommendation.basisPositionId,
-      recommendation
+  const projectReviewIndex = new Map(
+    pilot.projectReview.positions.map((position) => [
+      position.basis.id,
+      position
     ])
   );
-  const visible = analysis.basisPositions.filter((position) => {
-    const status = recommendationIndex.get(position.id)?.status;
-    return filter === "ALL" || status === filter;
-  });
+  const supplierColumns =
+    pilot.projectReview.coverage.relevantSupplierDocuments.length > 0
+      ? pilot.projectReview.coverage.relevantSupplierDocuments
+      : analysis.supplierDocuments.map((supplier) => ({
+          id: supplier.id,
+          label: supplier.label,
+          supplier: supplier.label
+        }));
+  const normalizedSearch = searchTerm.trim().toLocaleLowerCase("de");
+  const unresolvedStatuses = new Set([
+    "MANUAL_DECISION_REQUIRED",
+    "PROCESSING_PENDING",
+    "PROCESSING_ERROR",
+    "NO_COMPARABLE_OFFER",
+    "DEFERRED"
+  ]);
+  const compareLvOrder = (left: BasisPosition, right: BasisPosition) => {
+    const a = left.positionNumber.match(/\d+/g)?.map(Number) ?? [];
+    const b = right.positionNumber.match(/\d+/g)?.map(Number) ?? [];
+    for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+      const delta = (a[index] ?? 0) - (b[index] ?? 0);
+      if (delta !== 0) return delta;
+    }
+    return 0;
+  };
+  const visible = analysis.basisPositions
+    .filter((position) => {
+      const status = projectReviewIndex.get(position.id)?.liveStatus;
+      const reviewPosition = projectReviewIndex.get(position.id);
+      return (
+        (reviewPosition
+          ? liveFilterMatches(reviewPosition, filter)
+          : filter === "ALL" || status === filter) &&
+        (!normalizedSearch ||
+          Boolean(searchIndex.get(position.id)?.includes(normalizedSearch)))
+      );
+    })
+    .sort((left, right) => {
+      const leftReview = projectReviewIndex.get(left.id);
+      const rightReview = projectReviewIndex.get(right.id);
+      if (sortMode === "UNRESOLVED_FIRST") {
+        const delta =
+          Number(unresolvedStatuses.has(rightReview?.liveStatus ?? "")) -
+          Number(unresolvedStatuses.has(leftReview?.liveStatus ?? ""));
+        return delta || compareLvOrder(left, right);
+      }
+      if (sortMode === "STATUS") {
+        return (
+          (leftReview?.liveStatus ?? "").localeCompare(
+            rightReview?.liveStatus ?? "",
+            "de"
+          ) || compareLvOrder(left, right)
+        );
+      }
+      if (sortMode === "PRICE_DIFFERENCE") {
+        const difference = (position: ProjectReviewPosition | undefined) =>
+          position?.independent.nextComparableTotal !== null &&
+          position?.independent.comparableTotal !== null
+            ? position!.independent.nextComparableTotal! -
+              position!.independent.comparableTotal!
+            : Number.NEGATIVE_INFINITY;
+        return (
+          difference(rightReview) - difference(leftReview) ||
+          compareLvOrder(left, right)
+        );
+      }
+      return compareLvOrder(left, right);
+    });
   const detail =
     analysis.basisPositions.find((position) => position.id === selected) ??
     analysis.basisPositions[0];
   const detailOptions = analysis.supplierOptions.filter((option) =>
     option.basisPositionIds.includes(detail.id)
   );
-  const detailRecommendation = recommendationIndex.get(detail.id);
-  const decision = pilot.supplierDecisions.find(
-    (item) => item.basisPositionId === detail.id
+  const selectedOption = detailOptions.find((option) => option.id === selectedOptionId);
+  const activeReasons = activeDecisionReasons(CURRENT_DECISION_REASON_CATALOG);
+  const selectedReason = activeReasons.find((reason) => reason.code === reasonCode);
+  const decision = pilot.supplierDecisions
+    .filter((item) => item.basisPositionId === detail.id)
+    .at(-1);
+  const statusCounts = Object.fromEntries(
+    liveFilterOptions
+      .filter(([, value]) => value !== "ALL")
+      .map(([, value]) => [
+        value,
+        pilot.projectReview.positions.filter(
+          (position) => liveFilterMatches(position, value)
+        ).length
+      ])
   );
   const lineIndex = new Map(
     pilot.runs.flatMap((run) =>
@@ -1195,21 +1450,61 @@ function RealComparison({
       )
     )
   );
-  async function decide(supplierDocumentId: string | null, status: "SELECTED" | "DEFERRED") {
-    const response = await fetch("/api/review-actions", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        kind: "DECISION",
-        basisPositionId: detail.id,
-        supplierDocumentId,
-        status,
-        comment,
-        operator: "local-operator"
-      })
-    });
-    if (!response.ok) throw new Error(`Decision failed: ${response.status}`);
-    await reload();
+  const basisEvidenceAvailable = Boolean(
+    detail.evidence[0] && pilotEvidenceHref(pilot, detail.evidence[0])
+  );
+  const selectedLines = selectedOption
+    ? selectedOption.matchedOfferLineIds
+        .map((lineId) => lineIndex.get(lineId)?.line)
+        .filter((line): line is OfferLine => Boolean(line))
+    : [];
+  const supplierEvidenceAvailable =
+    selectedLines.length > 0 &&
+    selectedLines.every((line) =>
+      line.evidence.some((evidence) => Boolean(pilotEvidenceHref(pilot, evidence, line.id)))
+    );
+  const commentSatisfied =
+    !selectedReason?.requiresComment || comment.trim().length > 0;
+  const canConfirmDecision = Boolean(
+    selectedOption &&
+      basisEvidenceAvailable &&
+      supplierEvidenceAvailable &&
+      selectedReason &&
+      commentSatisfied
+  );
+
+  async function decide(status: "SELECTED" | "DEFERRED") {
+    setDecisionPending(true);
+    setDecisionError(null);
+    try {
+      const response = await fetch("/api/review-actions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "DECISION",
+          basisPositionId: detail.id,
+          status,
+          selectedSupplierOptionId:
+            status === "SELECTED" ? selectedOption?.id ?? null : null,
+          reasonCodes: status === "SELECTED" && reasonCode ? [reasonCode] : [],
+          comment,
+          decidedBy: "local-operator"
+        })
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(
+          [payload.error, ...(payload.details ?? [])].filter(Boolean).join(": ")
+        );
+      }
+      await reload();
+    } catch (error) {
+      setDecisionError(
+        error instanceof Error ? error.message : "Supplier decision failed"
+      );
+    } finally {
+      setDecisionPending(false);
+    }
   }
   return (
     <>
@@ -1218,23 +1513,143 @@ function RealComparison({
         title="Belastbarer Angebotsvergleich"
         description="Comparable totals enthalten nur belegte Primär- und Pflichtkomponenten; Optionalen und Alternativen bleiben separat."
       />
+      {!pilot.projectReview.invariant.valid ? (
+        <div className="notice blocking-invariant" data-invariant-warning>
+          <CircleAlert size={19} />
+          <div>
+            <strong>Vollständigkeitsprüfung fehlgeschlagen</strong>
+            <span>
+              Ergebnisexport gesperrt · problematische Positionen:{" "}
+              {pilot.projectReview.invariant.problemPositionIds.join(", ") ||
+                "nicht positionsbezogener Strukturfehler"}
+            </span>
+          </div>
+        </div>
+      ) : null}
+      <div className="lv-status-counters" data-lv-status-counters>
+        <div>
+          <span>Gesamt</span>
+          <strong>{pilot.projectReview.positions.length}</strong>
+        </div>
+        {liveFilterOptions.slice(1).map(([label, value]) => (
+          <div key={value}>
+            <span>{label}</span>
+            <strong>{statusCounts[value] ?? 0}</strong>
+          </div>
+        ))}
+      </div>
       <div className="comparison-layout">
         <section>
           <div className="filter-tabs">
-            {filterOptions.map(([label, value]) => <button key={value} className={filter === value ? "active" : ""} onClick={() => setFilter(value)}>{label}</button>)}
+            {liveFilterOptions.map(([label, value]) => <button key={value} className={filter === value ? "active" : ""} onClick={() => setFilter(value)}>{label}</button>)}
+          </div>
+          <div className="lv-table-tools">
+            <label>
+              <Search size={16} />
+              <input
+                type="search"
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
+                placeholder="Position, Beschreibung, Artikel, Lieferant oder Hersteller"
+                aria-label="LV durchsuchen"
+              />
+            </label>
+            <select
+              value={sortMode}
+              onChange={(event) =>
+                setSortMode(
+                  event.target.value as
+                    | "LV_ORDER"
+                    | "UNRESOLVED_FIRST"
+                    | "STATUS"
+                    | "PRICE_DIFFERENCE"
+                )
+              }
+              aria-label="LV sortieren"
+            >
+              <option value="LV_ORDER">LV-Reihenfolge</option>
+              <option value="UNRESOLVED_FIRST">Offene zuerst</option>
+              <option value="STATUS">Status</option>
+              <option value="PRICE_DIFFERENCE">Preisdifferenz</option>
+            </select>
+            <strong>
+              {visible.length} von {analysis.basisPositions.length} Positionen
+            </strong>
           </div>
           <div className="panel comparison-table">
             <div className="table-scroll"><table data-real-comparison>
-              <thead><tr><th>LV-Pos.</th><th>Beschreibung</th><th>Menge</th>{analysis.supplierDocuments.map((supplier) => <th key={supplier.id}>{supplier.label}</th>)}<th>Empfehlung</th><th>Operator</th></tr></thead>
+              <thead><tr><th className="lv-position-col">LV-Position</th><th className="lv-description-col">Beschreibung</th><th className="lv-quantity-col">Menge / Einheit</th>{supplierColumns.map((supplier) => <th key={supplier.id}>{supplier.supplier}</th>)}<th>Vergleich</th><th>Auswahl</th><th className="lv-status-col">Status</th><th>Kommentar</th><th>Aktion</th></tr></thead>
               <tbody>{visible.map((position) => {
                 const options = analysis.supplierOptions.filter((option) => option.basisPositionIds.includes(position.id));
-                const recommendation = recommendationIndex.get(position.id);
-                const rowDecision = pilot.supplierDecisions.find((item) => item.basisPositionId === position.id);
-                return <tr key={position.id} onClick={() => setSelected(position.id)} className={detail.id === position.id ? "selected-row" : ""}>
-                  <td><strong>{position.positionNumber}</strong></td><td>{position.description}<small className="scope-note">{position.requiredScope.join(" · ") || "Scope nicht explizit"}</small></td><td>{position.quantity ?? "—"} {position.unit ?? ""}</td>
-                  {analysis.supplierDocuments.map((supplier) => <td key={supplier.id}>{optionDisplay(options.find((option) => option.supplierDocumentId === supplier.id))}</td>)}
-                  <td><StatusBadge>{recommendation?.status ?? "NO_OFFER"}</StatusBadge></td>
-                  <td>{rowDecision ? `${rowDecision.status}${rowDecision.supplierDocumentId ? ` · ${analysis.supplierDocuments.find((item) => item.id === rowDecision.supplierDocumentId)?.label}` : ""}` : "Offen"}</td>
+                const projectPosition = projectReviewIndex.get(position.id);
+                const rowDecision = pilot.supplierDecisions
+                  .filter((item) => item.basisPositionId === position.id)
+                  .at(-1);
+                const automaticOption = options.find(
+                  (option) =>
+                    option.id === projectPosition?.independent.selectedSupplierOptionId
+                );
+                return <tr key={position.id} onClick={() => {
+                  setSelected(position.id);
+                  setSelectedOptionId(null);
+                  setReasonCode("");
+                  setComment("");
+                  setDecisionError(null);
+                }} className={detail.id === position.id ? "selected-row" : ""}>
+                  <td className="lv-position-col"><strong>{position.positionNumber}</strong></td><td className="lv-description-col">{position.description}<small className="scope-note">{position.scopeProfile?.procurementMaterialScope.map((requirement) => requirement.label).join(" · ") || "Materialumfang nicht explizit"}</small></td><td className="lv-quantity-col">{position.quantity ?? "—"} {position.unit ?? ""}</td>
+                  {supplierColumns.map((supplier) => {
+                    const option = options.find(
+                      (candidate) =>
+                        candidate.supplierDocumentId === supplier.id
+                    );
+                    const missingSource =
+                      projectPosition?.coverage.missingSources.find(
+                        (source) =>
+                          source.supplierDocumentId === supplier.id
+                      );
+                    const sourceAvailable = Boolean(
+                      option?.matchedOfferLineIds.some((lineId) =>
+                        lineIndex
+                          .get(lineId)
+                          ?.line.evidence.some((evidence) =>
+                            Boolean(
+                              pilotEvidenceHref(
+                                pilot,
+                                evidence,
+                                lineId
+                              )
+                            )
+                          )
+                      )
+                    );
+                    const specializedIrrelevant =
+                      projectPosition?.coverage.irrelevantSpecializedSuppliers.includes(
+                        supplier.id
+                      );
+                    return (
+                      <td key={supplier.id}>
+                        {specializedIrrelevant
+                          ? "Nicht relevant"
+                          : optionDisplay(option)}
+                        <small className="scope-note">
+                          {specializedIrrelevant
+                            ? "Spezialanbieter außerhalb des Positionsumfangs"
+                            : sourceAvailable
+                            ? "Quelle verfügbar"
+                            : missingSource?.pages.length
+                              ? `Angebotsseite ${missingSource.pages.join(", ")} noch nicht verarbeitet`
+                              : "Quelle fehlt"}
+                        </small>
+                      </td>
+                    );
+                  })}
+                  <td>{formatCurrency(projectPosition?.independent.comparableTotal ?? null)}</td>
+                  <td>{automaticOption?.supplierLabel ?? (rowDecision?.supplierDocumentId ? supplierColumns.find((item) => item.id === rowDecision.supplierDocumentId)?.supplier : "—")}</td>
+                  <td className="lv-status-col">
+                    <StatusBadge>{liveStatusLabel(projectPosition)}</StatusBadge>
+                  </td>
+                  <td>{rowDecision?.comment ? "Vorhanden" : "—"}</td>
+                  <td><button type="button" className="table-action">Prüfen</button></td>
                 </tr>;
               })}</tbody>
             </table></div>
@@ -1244,53 +1659,176 @@ function RealComparison({
           <span className="eyebrow">POSITION {detail.positionNumber}</span>
           <h2>{detail.description}</h2>
           <div className="requirement-grid"><div><span>Menge</span><strong>{detail.quantity ?? "—"} {detail.unit ?? ""}</strong></div><div><span>Validation</span><strong>{detail.verificationStatus ?? "NEEDS_REVIEW"}</strong></div></div>
+          {detail.scopeProfile ? (
+            <div className="scope-profile">
+              <div>
+                <span>Procurement material scope</span>
+                <strong>
+                  {detail.scopeProfile.procurementMaterialScope
+                    .map((requirement) => requirement.label)
+                    .join(" · ")}
+                </strong>
+              </div>
+              <div>
+                <span>Execution requirements</span>
+                <strong>
+                  {detail.scopeProfile.fullLvExecutionScope
+                    .filter(
+                      (requirement) => requirement.category !== "MATERIAL"
+                    )
+                    .map((requirement) => requirement.label)
+                    .join(" · ") || "Keine zusätzlichen Anforderungen"}
+                </strong>
+              </div>
+              {detail.scopeProfile.inheritedExecutionDescription.length ? (
+                <small>
+                  Geerbte Ausführungsbeschreibung belegt ·{" "}
+                  {detail.scopeProfile.inheritedMaterialRequirements
+                    .flatMap((requirement) => requirement.evidence)
+                    .map((evidence) => `S. ${evidence.pageNumber}`)
+                    .filter(
+                      (value, index, values) =>
+                        values.indexOf(value) === index
+                    )
+                    .join(", ")}
+                </small>
+              ) : null}
+            </div>
+          ) : null}
           <h3>Lieferantenoptionen</h3>
           {detailOptions.map((option) => {
+            const optionLines = option.matchedOfferLineIds
+              .map((lineId) => lineIndex.get(lineId)?.line)
+              .filter((line): line is OfferLine => Boolean(line));
             const evidenceLinks = Array.from(
               new Map(
-                option.matchedOfferLineIds.flatMap((lineId) => {
-                  const item = lineIndex.get(lineId);
-                  const evidence = item?.line.evidence[0];
-                  const href = evidence
-                    ? pilotSourceHref(
-                        pilot,
-                        evidence.documentId,
-                        evidence.pageNumber
-                      )
-                    : null;
-                  return href && evidence
-                    ? [[`${evidence.documentId}:${evidence.pageNumber}`, {
+                optionLines.flatMap((line) =>
+                  line.evidence.flatMap((evidence) => {
+                    const href = pilotEvidenceHref(pilot, evidence, line.id);
+                    return href
+                    ? [[`${line.id}:${evidence.id}`, {
                         href,
-                        pageNumber: evidence.pageNumber
+                        pageNumber: evidence.pageNumber,
+                        lineId: line.id
                       }] as const]
                     : [];
-                })
+                  })
+                )
               ).values()
             );
-            return <div className="supplier-option" key={option.id}>
+            return <div
+              className={`supplier-option ${selectedOptionId === option.id ? "selected-option" : ""}`}
+              data-supplier-option-id={option.id}
+              key={option.id}
+            >
               <span>{option.supplierLabel}</span><strong>{optionDisplay(option)}</strong>
               <small>{optionPriceBreakdown(option)}</small>
               <small>{option.scopeOfSupply.length} Scope-Zeilen · Pflicht {option.mandatoryComponentPrices.length} · Optional {option.optionalPrices.length}</small>
+              <div className="decision-source-lines">
+                {optionLines.length ? optionLines.map((line) => (
+                  <div key={line.id}>
+                    <span className="mono-label">{line.role}</span>
+                    <strong>{line.description}</strong>
+                    <small>
+                      {line.manufacturer ?? "Hersteller —"} · Art. {line.articleNumber ?? "—"} · {line.quantity ?? "—"} {line.unit ?? ""}
+                    </small>
+                  </div>
+                )) : <p>Keine originale Supplier-Zeile verknüpft.</p>}
+              </div>
               <ul className="option-reasons">
                 {option.reasons.map((reason) => <li key={reason}>{reason}</li>)}
               </ul>
               <div className="source-links">
-                {evidenceLinks.map((evidence) => <a key={evidence.href} href={evidence.href} target="_blank" rel="noreferrer">Supplier S. {evidence.pageNumber}</a>)}
+                {evidenceLinks.map((evidence) => <a key={evidence.href} href={evidence.href} target="_blank" rel="noreferrer">Zur Angebotsquelle · S. {evidence.pageNumber}</a>)}
               </div>
-              <Button kind="ghost" onClick={() => decide(option.supplierDocumentId, "SELECTED")}>{decision?.supplierDocumentId === option.supplierDocumentId ? <Check size={15} /> : null} Supplier auswählen</Button>
+              <Button kind="ghost" onClick={() => {
+                setSelectedOptionId(option.id);
+                setDecisionError(null);
+              }}>{selectedOptionId === option.id ? <Check size={15} /> : null} Option zur Entscheidung auswählen</Button>
             </div>;
           })}
-          {detail.evidence[0] ? <a className="source-button" href={pilotSourceHref(pilot, detail.evidence[0].documentId, detail.evidence[0].pageNumber) ?? "#"} target="_blank" rel="noreferrer"><Eye size={16} /> Zur Quelle Basis</a> : null}
+          {detail.evidence[0] ? <a className="source-button" href={pilotEvidenceHref(pilot, detail.evidence[0]) ?? "#"} target="_blank" rel="noreferrer"><Eye size={16} /> Zur Basis-Quelle</a> : null}
           <div className="inspector-status">
-            <StatusBadge>{detailRecommendation?.status ?? "NO_OFFER"}</StatusBadge>
-            {detailRecommendation?.reasons.length ? (
+            <StatusBadge>
+              {liveStatusLabel(projectReviewIndex.get(detail.id))}
+            </StatusBadge>
+            {projectReviewIndex.get(detail.id)?.primaryReasonDe ? (
+              <p>
+                {projectReviewIndex.get(detail.id)?.primaryReasonDe}
+              </p>
+            ) : null}
+            {projectReviewIndex.get(detail.id)?.independent.reasons.length ? (
               <ul className="option-reasons">
-                {detailRecommendation.reasons.map((reason) => <li key={reason}>{reason}</li>)}
+                {projectReviewIndex.get(detail.id)?.independent.reasons.map((reason) => <li key={reason}>{reason}</li>)}
               </ul>
             ) : <p>Keine vergleichbare Option.</p>}
+            <p>
+              Supplier coverage:{" "}
+              <strong>
+                {projectReviewIndex.get(detail.id)?.coverage.coverageStatus ??
+                  "UNKNOWN"}
+              </strong>
+            </p>
+            {projectReviewIndex.get(detail.id)?.coverage.missingSources.length ? (
+              <ul className="option-reasons">
+                {projectReviewIndex
+                  .get(detail.id)
+                  ?.coverage.missingSources.map((source) => {
+                    const supplier =
+                      supplierColumns.find(
+                        (candidate) =>
+                          candidate.id === source.supplierDocumentId
+                      )?.supplier ?? source.supplierDocumentId;
+                    return (
+                      <li key={source.supplierDocumentId}>
+                        {supplier}
+                        {source.pages.length
+                          ? `-Angebotsseite ${source.pages.join(", ")} noch nicht verarbeitet.`
+                          : ": fehlende Angebotsseite noch nicht bestimmt."}
+                      </li>
+                    );
+                  })}
+              </ul>
+            ) : null}
           </div>
+          {decision ? (
+            <div className="decision-history-note">
+              <strong>Gespeicherte Entscheidung: {decision.status}</strong>
+              <span>
+                ID {decision.id}
+                {"catalogVersion" in decision ? ` · Katalog ${decision.catalogVersion}` : " · Legacy decision"}
+              </span>
+            </div>
+          ) : null}
+          <label className="comment-field">
+            <span>Entscheidungsgrund · Katalog {CURRENT_DECISION_REASON_CATALOG.version}</span>
+            <select value={reasonCode} onChange={(event) => setReasonCode(event.target.value)}>
+              <option value="">Grund auswählen</option>
+              {activeReasons.map((reason) => (
+                <option key={reason.code} value={reason.code}>
+                  {reason.labelDe}
+                </option>
+              ))}
+            </select>
+          </label>
+          {selectedReason ? (
+            <p className="placeholder-reason">
+              {CURRENT_DECISION_REASON_CATALOG.placeholder ? "Placeholder · " : ""}
+              {selectedReason.descriptionDe}
+            </p>
+          ) : null}
           <label className="comment-field"><span>Entscheidungskommentar</span><textarea value={comment} onChange={(event) => setComment(event.target.value)} /></label>
-          <Button kind="secondary" onClick={() => decide(null, "DEFERRED")}>Entscheidung zurückstellen</Button>
+          <ul className="decision-validation">
+            <li className={basisEvidenceAvailable ? "ok" : "invalid"}>Basis evidence {basisEvidenceAvailable ? "verfügbar" : "fehlt"}</li>
+            <li className={supplierEvidenceAvailable ? "ok" : "invalid"}>Supplier evidence {supplierEvidenceAvailable ? "verfügbar" : "fehlt"}</li>
+            <li className={selectedReason ? "ok" : "invalid"}>Entscheidungsgrund {selectedReason ? "gewählt" : "fehlt"}</li>
+            <li className={commentSatisfied ? "ok" : "invalid"}>Pflichtkommentar {commentSatisfied ? "vorhanden" : "fehlt"}</li>
+          </ul>
+          {decisionError ? <p className="action-error">{decisionError}</p> : null}
+          <div className="review-actions">
+            <Button disabled={decisionPending || !canConfirmDecision} onClick={() => decide("SELECTED")}>Supplier decision bestätigen</Button>
+            <Button kind="secondary" disabled={decisionPending} onClick={() => decide("DEFERRED")}>Entscheidung zurückstellen</Button>
+          </div>
         </aside>
       </div>
     </>
@@ -1300,52 +1838,518 @@ function RealComparison({
 function Comparison() {
   const { pilot, reload } = usePilotState();
   if (pilot === undefined) return <div className="panel loading-panel">Pilotdaten werden geladen…</div>;
-  return pilot === null ? <SyntheticComparison /> : <RealComparison pilot={pilot} reload={reload} />;
+  return pilot === null ? (
+    <SyntheticComparison />
+  ) : process.env.NEXT_PUBLIC_LEGACY_LV_UI === "true" ? (
+    <RealComparison pilot={pilot} reload={reload} />
+  ) : (
+    <LvComparisonPage pilot={pilot} reload={reload} />
+  );
 }
 
 function RealDecisions({
   pilot,
-  reload
+  reload,
+  embedded = false
 }: {
   pilot: PilotStateView;
   reload: () => Promise<void>;
+  embedded?: boolean;
 }) {
   const analysis = pilot.analysis;
-  const [comments, setComments] = useState<Record<string, string>>({});
-  if (!analysis) return <div className="notice">Keine reale Pilotanalyse vorhanden.</div>;
-  async function submit(positionId: string, supplierDocumentId: string | null, status: "SELECTED" | "DEFERRED") {
-    const response = await fetch("/api/review-actions", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        kind: "DECISION",
-        basisPositionId: positionId,
-        supplierDocumentId,
-        status,
-        comment: comments[positionId] ?? "",
-        operator: "local-operator"
-      })
+  const automaticPositions = pilot.projectReview.positions.filter(
+    (position) => position.liveStatus === "AUTO_SELECTED_LOWEST_PRICE"
+  );
+  const unresolvedPositions = pilot.projectReview.positions.filter(
+    (position) =>
+      (position.liveStatus === "MANUAL_DECISION_REQUIRED" &&
+        position.reviewQueue === "MANAGER_DECISION") ||
+      position.liveStatus === "DEFERRED"
+  );
+  const [reviewBasisId, setReviewBasisId] = useState(
+    unresolvedPositions[0]?.basis.id ?? ""
+  );
+  const [overrideBasisId, setOverrideBasisId] = useState<string | null>(null);
+  const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null);
+  const [selectedLineIds, setSelectedLineIds] = useState<string[]>([]);
+  const [comment, setComment] = useState("");
+  const [draftLoadedFor, setDraftLoadedFor] = useState<string | null>(null);
+  const [queueRestored, setQueueRestored] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  const [ownerFilter, setOwnerFilter] = useState("ALL");
+
+  const reviewPosition =
+    pilot.projectReview.positions.find(
+      (position) => position.basis.id === (overrideBasisId ?? reviewBasisId)
+    ) ?? unresolvedPositions[0] ?? null;
+  const reviewIndex = reviewPosition
+    ? unresolvedPositions.findIndex(
+        (position) => position.basis.id === reviewPosition.basis.id
+      )
+    : -1;
+  const lineIndex = new Map(
+    pilot.runs.flatMap((run) =>
+      run.result.envelope.extraction.offerGroups.flatMap((group) =>
+        group.lines.map((line) => [line.id, line] as const)
+      )
+    )
+  );
+  const draftKey = reviewPosition && analysis
+    ? `spt-manager-draft:${analysis.id}:${reviewPosition.basis.id}`
+    : null;
+  const reviewPositionId = reviewPosition?.basis.id ?? null;
+  const queueKey = analysis ? `spt-manager-last-position:${analysis.id}` : null;
+  const unresolvedPositionIds = unresolvedPositions
+    .map((position) => position.basis.id)
+    .join("|");
+
+  useEffect(() => {
+    if (!queueKey) return;
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      const savedPositionId = localStorage.getItem(queueKey);
+      if (
+        savedPositionId &&
+        unresolvedPositionIds.split("|").includes(savedPositionId)
+      ) {
+        setReviewBasisId(savedPositionId);
+      }
+      setQueueRestored(true);
     });
-    if (!response.ok) throw new Error(`Decision failed: ${response.status}`);
-    await reload();
+    return () => {
+      cancelled = true;
+    };
+  }, [queueKey, unresolvedPositionIds]);
+
+  useEffect(() => {
+    if (!queueRestored || !queueKey || !reviewBasisId) return;
+    localStorage.setItem(queueKey, reviewBasisId);
+  }, [queueKey, queueRestored, reviewBasisId]);
+
+  useEffect(() => {
+    if (!draftKey || !reviewPositionId) return;
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      try {
+        const stored = localStorage.getItem(draftKey);
+        const draft = stored
+          ? (JSON.parse(stored) as {
+              selectedOptionId?: string | null;
+              selectedLineIds?: string[];
+              comment?: string;
+            })
+          : null;
+        setSelectedOptionId(draft?.selectedOptionId ?? null);
+        setSelectedLineIds(draft?.selectedLineIds ?? []);
+        setComment(draft?.comment ?? "");
+      } catch {
+        setSelectedOptionId(null);
+        setSelectedLineIds([]);
+        setComment("");
+      }
+      setDraftLoadedFor(reviewPositionId);
+      setActionError(null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [draftKey, reviewPositionId]);
+
+  useEffect(() => {
+    if (
+      !draftKey ||
+      !reviewPositionId ||
+      draftLoadedFor !== reviewPositionId
+    ) {
+      return;
+    }
+    localStorage.setItem(
+      draftKey,
+      JSON.stringify({ selectedOptionId, selectedLineIds, comment })
+    );
+  }, [
+    comment,
+    draftKey,
+    draftLoadedFor,
+    reviewPositionId,
+    selectedLineIds,
+    selectedOptionId
+  ]);
+
+  if (!analysis) {
+    return <div className="notice">Keine reale Pilotanalyse vorhanden.</div>;
   }
+
+  async function submitDecision(
+    status:
+      | "SELECTED"
+      | "DEFERRED"
+      | "NONE_CORRECT"
+      | "ADDITIONAL_CHECK_REQUESTED"
+  ) {
+    if (!reviewPosition) return;
+    const commentRequired =
+      status === "SELECTED" ||
+      status === "NONE_CORRECT" ||
+      Boolean(overrideBasisId);
+    if (commentRequired && comment.trim().length === 0) {
+      setActionError("Entscheidungsbegründung ist erforderlich.");
+      return;
+    }
+    if (
+      status === "SELECTED" &&
+      (!selectedOptionId || selectedLineIds.length === 0)
+    ) {
+      setActionError("Supplier-Option und exakte Bundle-Zeilen auswählen.");
+      return;
+    }
+    setPending(true);
+    setActionError(null);
+    try {
+      const response = await fetch("/api/review-actions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "DECISION",
+          basisPositionId: reviewPosition.basis.id,
+          status,
+          selectedSupplierOptionId:
+            status === "SELECTED" ? selectedOptionId : null,
+          selectedSupplierLineIds:
+            status === "SELECTED" ? selectedLineIds : [],
+          reasonCodes:
+            status === "SELECTED" || status === "NONE_CORRECT"
+              ? [PLACEHOLDER_DECISION_REASON_CODE]
+              : [],
+          comment,
+          decidedBy: "local-manager",
+          ...(status === "SELECTED"
+            ? {
+                decisionType: overrideBasisId
+                  ? "AUTOMATIC_OVERRIDE"
+                  : "MANUAL_SELECTION"
+              }
+            : {})
+        })
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(
+          [payload.error, ...(payload.details ?? [])].filter(Boolean).join(": ")
+        );
+      }
+      if (draftKey) localStorage.removeItem(draftKey);
+      setOverrideBasisId(null);
+      setSelectedOptionId(null);
+      setSelectedLineIds([]);
+      setComment("");
+      await reload();
+    } catch (error) {
+      setActionError(
+        error instanceof Error ? error.message : "Entscheidung fehlgeschlagen."
+      );
+    } finally {
+      setPending(false);
+    }
+  }
+
+  const ownerPositions = pilot.projectReview.positions.filter((position) => {
+    const decisions = pilot.supplierDecisions.filter(
+      (decision) => decision.basisPositionId === position.basis.id
+    );
+    const latest = decisions.at(-1);
+    const autoOverridden = decisions.some(
+      (decision) =>
+        "decisionType" in decision &&
+        decision.decisionType === "AUTOMATIC_OVERRIDE"
+    );
+    if (ownerFilter === "ALL") return true;
+    if (ownerFilter === "AUTO_CONFIRMED") {
+      return position.liveStatus === "AUTO_SELECTED_LOWEST_PRICE";
+    }
+    if (ownerFilter === "AUTO_CHANGED") return autoOverridden;
+    if (ownerFilter === "OPEN") {
+      return (
+        position.liveStatus === "MANUAL_DECISION_REQUIRED" &&
+        position.reviewQueue === "MANAGER_DECISION"
+      );
+    }
+    if (ownerFilter === "SYSTEM_REVIEW") {
+      return (
+        position.liveStatus === "MANUAL_DECISION_REQUIRED" &&
+        position.reviewQueue === "SYSTEM_REVIEW"
+      );
+    }
+    if (ownerFilter === "MANUAL") return latest?.status === "SELECTED";
+    if (ownerFilter === "DEFERRED") {
+      return ["DEFERRED", "ADDITIONAL_CHECK_REQUESTED"].includes(
+        latest?.status ?? ""
+      );
+    }
+    if (ownerFilter === "HISTORICAL_EXPENSIVE") {
+      return (
+        position.historical.classification ===
+        "AUTO_LOWEST_BUT_HISTORY_DIFFERS"
+      );
+    }
+    return position.liveStatus === "NO_COMPARABLE_OFFER";
+  });
+  const pendingPositions = pilot.projectReview.positions.filter(
+    (position) => position.liveStatus === "PROCESSING_PENDING"
+  ).length;
+
   return (
     <>
-      <PageHeader eyebrow="ENTSCHEIDUNGEN · REAL PILOT" title="Kommerzielle Auswahl" description="Jede Auswahl oder Zurückstellung erzeugt SupplierDecision und AuditEvent." />
-      <div className="decision-grid" data-real-decisions>
-        {analysis.basisPositions.map((position) => {
-          const recommendation = analysis.recommendations.find((item) => item.basisPositionId === position.id);
-          const options = analysis.supplierOptions.filter((option) => option.basisPositionIds.includes(position.id));
-          const decision = pilot.supplierDecisions.find((item) => item.basisPositionId === position.id);
-          return <article className="panel decision-card" key={position.id}>
-            <div className="decision-head"><span className="mono-label">{position.positionNumber}</span><StatusBadge>{recommendation?.status ?? "NO_OFFER"}</StatusBadge></div>
-            <h2>{position.description}</h2>
-            <div className="choice-grid">{options.map((option) => <button key={option.id} onClick={() => submit(position.id, option.supplierDocumentId, "SELECTED")} className={decision?.supplierDocumentId === option.supplierDocumentId ? "selected" : ""}><span>{option.supplierLabel}</span><strong>{optionDisplay(option)}</strong>{decision?.supplierDocumentId === option.supplierDocumentId ? <CheckCircle2 size={17} /> : null}</button>)}</div>
-            <label className="comment-field"><span>Entscheidungsgrund</span><input value={comments[position.id] ?? ""} onChange={(event) => setComments((current) => ({ ...current, [position.id]: event.target.value }))} placeholder="Kommentar für Audit-Trail" /></label>
-            <Button kind="secondary" onClick={() => submit(position.id, null, "DEFERRED")}>Zurückstellen</Button>
-          </article>;
-        })}
-      </div>
+      {!embedded ? (
+        <PageHeader
+          eyebrow="WISSENSSAMMLUNG · ENTSCHEIDUNGEN"
+          title="Manager-Entscheidungen"
+          description="Automatische Ergebnisse bleiben sichtbar und jede manuelle Änderung wird versioniert."
+        />
+      ) : null}
+      {embedded ? (
+        <div
+          id="entscheidungspruefung"
+          className="lv-decision-divider"
+        >
+          <span>ENTSCHEIDUNGSPRÜFUNG IM LV-VERGLEICH</span>
+        </div>
+      ) : null}
+      {pendingPositions > 0 ? (
+        <div className="info-strip manager-coverage-warning">
+          <CircleAlert size={18} />
+          <span>
+            {pendingPositions} Positionen bleiben in Verarbeitung, bis ihre
+            relevante Supplier-Abdeckung vollständig ist.
+          </span>
+        </div>
+      ) : null}
+
+      <section className="manager-section" data-automatic-decisions>
+        <div className="manager-section-head">
+          <div>
+            <span className="eyebrow">A · AUTOMATISCH ZUGEORDNET</span>
+            <h2>Unique lowest fully comparable</h2>
+          </div>
+          <strong>{automaticPositions.length}</strong>
+        </div>
+        {automaticPositions.length ? (
+          <div className="automatic-decision-list">
+            {automaticPositions.map((position) => {
+              const chosen = position.options.find(
+                (candidate) =>
+                  candidate.id === position.independent.selectedSupplierOptionId
+              );
+              return (
+                <article className="panel automatic-decision-card" key={position.basis.id}>
+                  <div>
+                    <span className="mono-label">{position.basis.positionNumber}</span>
+                    <h3>{position.basis.description}</h3>
+                  </div>
+                  <dl>
+                    <div><dt>Supplier</dt><dd>{chosen?.supplierLabel ?? "—"}</dd></div>
+                    <div><dt>Vergleichspreis</dt><dd>{formatCurrency(position.independent.comparableTotal)}</dd></div>
+                    <div><dt>Nächste Option</dt><dd>{formatCurrency(position.independent.nextComparableTotal)}</dd></div>
+                    <div><dt>Ersparnis</dt><dd>{formatCurrency(position.independent.saving)}</dd></div>
+                  </dl>
+                  {position.basis.evidence[0] ? (
+                    <a className="source-button" href={pilotEvidenceHref(pilot, position.basis.evidence[0]) ?? "#"} target="_blank" rel="noreferrer">Zur Basis-Quelle</a>
+                  ) : null}
+                  <Button kind="secondary" onClick={() => {
+                    setOverrideBasisId(position.basis.id);
+                    setReviewBasisId(position.basis.id);
+                  }}>Automatische Auswahl ändern</Button>
+                </article>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="panel empty-manager-section">
+            Noch keine Position erfüllt Supplier-Coverage, Vergleichbarkeit und
+            ein eindeutiges Preisminimum gleichzeitig.
+          </div>
+        )}
+      </section>
+
+      <section className="manager-section" data-manager-queue>
+        <div className="manager-section-head">
+          <div>
+            <span className="eyebrow">B · ENTSCHEIDUNG ERFORDERLICH</span>
+            <h2>Eine Position nach der anderen</h2>
+          </div>
+          <strong>{unresolvedPositions.length}</strong>
+        </div>
+        {reviewPosition ? (
+          <article className="panel manager-review-card">
+            <div className="manager-progress">
+              <span>
+                {overrideBasisId
+                  ? "Automatische Auswahl ändern"
+                  : `Position ${Math.max(1, reviewIndex + 1)} von ${unresolvedPositions.length}`}
+              </span>
+              <div>
+                <Button kind="ghost" disabled={overrideBasisId !== null || reviewIndex <= 0} onClick={() => setReviewBasisId(unresolvedPositions[reviewIndex - 1]?.basis.id ?? reviewPosition.basis.id)}><ChevronLeft size={18} /> Zurück</Button>
+                <Button kind="ghost" disabled={overrideBasisId !== null || reviewIndex < 0 || reviewIndex >= unresolvedPositions.length - 1} onClick={() => setReviewBasisId(unresolvedPositions[reviewIndex + 1]?.basis.id ?? reviewPosition.basis.id)}>Weiter <ChevronRight size={18} /></Button>
+              </div>
+            </div>
+            <div className="manager-basis">
+              <span className="mono-label">{reviewPosition.basis.positionNumber}</span>
+              <h2>{reviewPosition.basis.description}</h2>
+              <strong>{reviewPosition.basis.quantity ?? "—"} {reviewPosition.basis.unit ?? ""}</strong>
+              {reviewPosition.basis.evidence[0] ? (
+                <a className="source-button" href={pilotEvidenceHref(pilot, reviewPosition.basis.evidence[0]) ?? "#"} target="_blank" rel="noreferrer"><Eye size={18} /> Zur Basis-Quelle</a>
+              ) : null}
+            </div>
+            <div className="manager-discrepancy">
+              <h3>Warum ist eine Entscheidung nötig?</h3>
+              <ul>
+                {[
+                  ...reviewPosition.independent.reasons,
+                  `Supplier coverage: ${reviewPosition.coverage.coverageStatus}`,
+                  ...reviewPosition.coverage.missingExpectedSuppliers.map(
+                    (supplier) =>
+                      `Erwartetes Supplier-Angebot noch nicht verarbeitet: ${supplier}`
+                  )
+                ].map((reason) => <li key={reason}>{reason}</li>)}
+              </ul>
+              <dl>
+                <div><dt>System: günstigste vergleichbare Option</dt><dd>{formatCurrency(reviewPosition.independent.comparableTotal)}</dd></div>
+              </dl>
+            </div>
+            <div className="manager-options">
+              {reviewPosition.options.map((candidate) => {
+                const lines = candidate.matchedOfferLineIds
+                  .map((lineId) => lineIndex.get(lineId))
+                  .filter((line): line is OfferLine => Boolean(line));
+                const required = lines.filter(
+                  (line) => !["OPTIONAL", "ALTERNATIVE"].includes(line.role)
+                );
+                const optional = lines.filter((line) =>
+                  ["OPTIONAL", "ALTERNATIVE"].includes(line.role)
+                );
+                return (
+                  <section className={`manager-option ${selectedOptionId === candidate.id ? "selected" : ""}`} key={candidate.id}>
+                    <button type="button" className="manager-option-select" onClick={() => {
+                      setSelectedOptionId(candidate.id);
+                      setSelectedLineIds(required.map((line) => line.id));
+                    }}>
+                      <span>{candidate.supplierLabel}</span>
+                      <strong>{optionDisplay(candidate)}</strong>
+                      <StatusBadge>{candidate.status}</StatusBadge>
+                    </button>
+                    <h4>Komplettes Bundle</h4>
+                    {required.length ? required.map((line) => (
+                      <label className="manager-line" key={line.id}>
+                        <input
+                          type="checkbox"
+                          checked={selectedLineIds.includes(line.id)}
+                          disabled={selectedOptionId !== candidate.id}
+                          onChange={(event) => setSelectedLineIds((current) =>
+                            event.target.checked
+                              ? Array.from(new Set([...current, line.id]))
+                              : current.filter((id) => id !== line.id)
+                          )}
+                        />
+                        <span><strong>{line.description}</strong><small>{line.quantity ?? "—"} {line.unit ?? ""} · {line.role}</small></span>
+                        <span className="manager-line-sources">
+                          {line.evidence.map((evidence) => {
+                            const href = pilotEvidenceHref(pilot, evidence, line.id);
+                            return href ? <a key={evidence.id} href={href} target="_blank" rel="noreferrer">Zur Angebotsquelle · S. {evidence.pageNumber}</a> : null;
+                          })}
+                        </span>
+                      </label>
+                    )) : <p>Keine belastbar zugeordnete Angebotszeile.</p>}
+                    {optional.length ? (
+                      <div className="manager-optional">
+                        <h4>Optional separat</h4>
+                        {optional.map((line) => <p key={line.id}>{line.description}</p>)}
+                      </div>
+                    ) : null}
+                    {candidate.technicalDeviations.length ? (
+                      <div className="manager-technical">
+                        <h4>Technische Unterschiede</h4>
+                        {candidate.technicalDeviations.map((difference) => <p key={difference}>{difference}</p>)}
+                      </div>
+                    ) : null}
+                    <ul className="option-reasons">
+                      {candidate.reasons.map((reason) => <li key={reason}>{reason}</li>)}
+                    </ul>
+                  </section>
+                );
+              })}
+            </div>
+            <label className="manager-comment">
+              <span>Entscheidungsbegründung</span>
+              <textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Bitte ausführlich erklären, warum diese Entscheidung getroffen wird." />
+              <small>Entwurf wird auf diesem Gerät automatisch gespeichert.</small>
+            </label>
+            {actionError ? <p className="action-error">{actionError}</p> : null}
+            <div className="manager-actions">
+              <Button disabled={pending || !selectedOptionId || selectedLineIds.length === 0 || comment.trim().length === 0} onClick={() => submitDecision("SELECTED")}>Ausgewählte Option bestätigen</Button>
+              <Button kind="secondary" disabled={pending || comment.trim().length === 0} onClick={() => submitDecision("NONE_CORRECT")}>Keine Option ist richtig</Button>
+              <Button kind="ghost" disabled={pending} onClick={() => submitDecision("DEFERRED")}>Zurückstellen</Button>
+              <Button kind="ghost" disabled={pending} onClick={() => submitDecision("ADDITIONAL_CHECK_REQUESTED")}>Zusätzliche Prüfung anfordern</Button>
+              {overrideBasisId ? <Button kind="ghost" onClick={() => setOverrideBasisId(null)}>Änderung abbrechen</Button> : null}
+            </div>
+          </article>
+        ) : (
+          <div className="panel empty-manager-section">Keine offene Managerentscheidung.</div>
+        )}
+      </section>
+
+      <section className="manager-section owner-knowledge" data-owner-knowledge>
+        <div className="manager-section-head">
+          <div>
+            <span className="eyebrow">OWNER VIEW</span>
+            <h2>Wissenssammlung / Entscheidungen</h2>
+          </div>
+          <strong>{ownerPositions.length}</strong>
+        </div>
+        <div className="owner-filters">
+          {[
+            ["ALL", "Alle"],
+            ["AUTO_CONFIRMED", "Auto bestätigt"],
+            ["AUTO_CHANGED", "Auto geändert"],
+            ["OPEN", "Entscheidung durch Leitung"],
+            ["SYSTEM_REVIEW", "Technische Systemprüfung"],
+            ["MANUAL", "Manuell entschieden"],
+            ["DEFERRED", "Zurückgestellt"],
+            ...(pilot.projectReview.coverage.historicalCalculationAvailable
+              ? [["HISTORICAL_EXPENSIVE", "Historisch teurer gewählt"]]
+              : []),
+            ["NOT_COMPARABLE", "Nicht vergleichbar"]
+          ].map(([value, label]) => <button key={value} className={ownerFilter === value ? "active" : ""} onClick={() => setOwnerFilter(value)}>{label}</button>)}
+        </div>
+        <div className="owner-list">
+          {ownerPositions.map((position) => {
+            const history = pilot.supplierDecisions.filter(
+              (decision) => decision.basisPositionId === position.basis.id
+            );
+            const latest = history.at(-1);
+            const independentOption = position.options.find(
+              (candidate) =>
+                candidate.id === position.independent.systemCheapestOptionId
+            );
+            return (
+              <article className="panel owner-record" key={position.basis.id}>
+                <div><span className="mono-label">{position.basis.positionNumber}</span><StatusBadge>{liveStatusLabel(position)}</StatusBadge></div>
+                <h3>{position.basis.description}</h3>
+                <p>Unabhängig günstigste Option: <strong>{independentOption?.supplierLabel ?? "nicht vergleichbar"}</strong></p>
+                <p>Managerentscheidung: <strong>{latest?.status ?? "offen"}</strong></p>
+                {latest?.comment ? <blockquote>{latest.comment}</blockquote> : null}
+                {position.basis.evidence[0] ? <a href={pilotEvidenceHref(pilot, position.basis.evidence[0]) ?? "#"} target="_blank" rel="noreferrer">Zur Basis-Quelle</a> : null}
+                <details>
+                  <summary>Entscheidungshistorie ({history.length})</summary>
+                  <ol>{history.map((decision) => <li key={decision.id}>{decision.status} · {decision.comment || "ohne Kommentar"} · ID {decision.id}</li>)}</ol>
+                </details>
+              </article>
+            );
+          })}
+        </div>
+      </section>
     </>
   );
 }
@@ -1356,17 +2360,59 @@ function Decisions() {
   return pilot === null ? <SyntheticDecisions /> : <RealDecisions pilot={pilot} reload={reload} />;
 }
 
-function ExportView() {
+function ExportView({ embedded = false }: { embedded?: boolean } = {}) {
+  const { pilot, reload } = usePilotState();
   const [confirmedOnly, setConfirmedOnly] = useState(true);
   const [includeEvidence, setIncludeEvidence] = useState(true);
+  const [importMessage, setImportMessage] = useState<string | null>(null);
   const exportable = useMemo(() => comparisonRows.filter((row) => row.status === "CLEAR_RECOMMENDATION").length, []);
+  const realAutomatic =
+    pilot?.projectReview.positions.filter(
+      (position) => position.liveStatus === "AUTO_SELECTED_LOWEST_PRICE"
+    ).length ?? 0;
+  const realOpen =
+    pilot?.projectReview.positions.filter(
+      (position) =>
+        ["MANUAL_DECISION_REQUIRED", "NO_COMPARABLE_OFFER"].includes(
+          position.liveStatus
+        )
+    ).length ?? 0;
+  async function importReviewPackage(file: File) {
+    setImportMessage("Review-Paket wird geprüft…");
+    try {
+      const response = await fetch("/api/review-package", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: await file.text()
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.message ?? payload.error ?? "Import fehlgeschlagen");
+      }
+      setImportMessage(
+        `${payload.imported} Entscheidungen importiert, ${payload.skipped} bereits vorhanden.`
+      );
+      await reload();
+    } catch (error) {
+      setImportMessage(
+        error instanceof Error ? error.message : "Import fehlgeschlagen"
+      );
+    }
+  }
   return (
     <>
-      <PageHeader
-        eyebrow="EXPORT"
-        title="Prüfergebnis exportieren"
-        description="XLSX enthält nur transparent gekennzeichnete, bestätigte Daten und Quellenverweise."
-      />
+      {embedded ? (
+        <div className="lv-decision-divider">
+          <span>EXPORT IM LV-VERGLEICH</span>
+          <h2>Prüfergebnis und Review-Paket</h2>
+        </div>
+      ) : (
+        <PageHeader
+          eyebrow="EXPORT"
+          title="Prüfergebnis exportieren"
+          description="XLSX enthält nur transparent gekennzeichnete, bestätigte Daten und Quellenverweise."
+        />
+      )}
       <div className="export-layout">
         <section className="panel export-settings">
           <div className="export-icon"><Download size={26} /></div>
@@ -1374,15 +2420,35 @@ function ExportView() {
           <p>Positionen, Lieferantenoptionen, vergleichbare Preise, Status, Entscheidungen, Kommentare und Evidence-Seiten.</p>
           <label className="check-row"><input type="checkbox" checked={confirmedOnly} onChange={(event) => setConfirmedOnly(event.target.checked)} /><span><strong>Nur bestätigte Daten</strong><small>Ungeprüfte Werte werden nicht als bestätigt exportiert.</small></span></label>
           <label className="check-row"><input type="checkbox" checked={includeEvidence} onChange={(event) => setIncludeEvidence(event.target.checked)} /><span><strong>Quellenverweise aufnehmen</strong><small>Dokument- und Seitenreferenz je Position.</small></span></label>
-          <a className="button button-primary full" href={`/api/export?confirmedOnly=${confirmedOnly}&evidence=${includeEvidence}`}><FileDown size={17} /> XLSX erstellen</a>
+          {pilot ? (
+            <>
+              <Link className="button button-primary full" href="/api/review-package?format=json"><FileDown size={17} /> SPT review package JSON</Link>
+              {pilot.projectReview.invariant.valid ? (
+                <Link className="button button-secondary full" href="/api/review-package?format=xlsx"><FileDown size={17} /> Ergebnis exportieren (XLSX)</Link>
+              ) : (
+                <button className="button button-secondary full" disabled title="Vollständigkeitsprüfung fehlgeschlagen"><LockKeyhole size={17} /> Ergebnisexport gesperrt</button>
+              )}
+              <label className="review-package-import">
+                <span><Upload size={17} /> Review-Paket importieren</span>
+                <input type="file" accept="application/json,.json" onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) void importReviewPackage(file);
+                }} />
+              </label>
+              {importMessage ? <p className="import-message">{importMessage}</p> : null}
+              <small className="package-note">Originale PDF-Dateien werden nicht in das Paket eingebettet.</small>
+            </>
+          ) : (
+            <a className="button button-primary full" href={`/api/export?confirmedOnly=${confirmedOnly}&evidence=${includeEvidence}`}><FileDown size={17} /> XLSX erstellen</a>
+          )}
         </section>
         <aside className="panel export-summary">
           <span className="eyebrow">EXPORTBEREITSCHAFT</span>
-          <div className="readiness-score"><strong>{exportable}</strong><span>eindeutige Positionen</span></div>
-          <div className="summary-row"><span>Entscheidung erforderlich</span><strong>3</strong></div>
-          <div className="summary-row"><span>Technische Abweichung</span><strong>1</strong></div>
-          <div className="summary-row"><span>Preis unklar</span><strong>1</strong></div>
-          <div className="summary-row"><span>Kein Angebot</span><strong>1</strong></div>
+          <div className="readiness-score"><strong>{pilot ? realAutomatic : exportable}</strong><span>automatisch bestätigt</span></div>
+          <div className="summary-row"><span>Entscheidung erforderlich</span><strong>{pilot ? realOpen : 3}</strong></div>
+          <div className="summary-row"><span>Entscheidungshistorie</span><strong>{pilot?.supplierDecisions.length ?? 0}</strong></div>
+          <div className="summary-row"><span>Supplier coverage</span><strong>{pilot?.projectReview.coverage.allRelevantOffersProcessed ? "vollständig" : "unvollständig"}</strong></div>
+          <div className="summary-row"><span>Vollständigkeitsinvariant</span><strong>{pilot?.projectReview.invariant.valid ? "erfüllt" : "blockiert"}</strong></div>
           <div className="info-strip compact"><CircleAlert size={16} /><span>Offene Positionen bleiben im Export klar als ungeprüft markiert.</span></div>
         </aside>
       </div>

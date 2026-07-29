@@ -4,8 +4,10 @@ import {
   buildSupplierOptions,
   classifyOfferCompleteness,
   composeMatchLink,
+  isSubtotalOfferLine,
   isMatchingSourceDocumentType,
   matchConstraints,
+  normalizeLvPositionReference,
   proposeMatches,
   scoreMatch
 } from "@/domain/matching";
@@ -51,6 +53,68 @@ describe("matching", () => {
     expect(result.unitCompatible).toBe(false);
   });
 
+  it("confirms technical identity only from matching manufacturer and type", () => {
+    const result = matchConstraints(
+      {
+        ...basisPosition,
+        description:
+          'Membran-Ausdehnungsgefäß Fabrikat: Reflex Typ: N200 Komplett liefern',
+        manufacturerRequirements: ["Reflex"],
+        technicalAttributes: [
+          { name: "Nennvolumen", value: "200 l" },
+          { name: "Anschluss", value: 'R 1"' }
+        ]
+      },
+      [
+        {
+          ...offerLine,
+          manufacturer: "Reflex",
+          description:
+            'Reflex Membran-Ausdehnungsgefäß N grau 200 Liter R 1"'
+        }
+      ]
+    );
+    expect(result.productIdentityConfirmed).toBe(true);
+    expect(result.technicalComparisonStatus).toBe("CONFIRMED_COMPATIBLE");
+    expect(result.unresolvedTechnicalAttributes).toEqual([]);
+  });
+
+  it("keeps unprinted technical attributes unresolved instead of inventing a deviation", () => {
+    const result = matchConstraints(
+      {
+        ...basisPosition,
+        manufacturerRequirements: [],
+        technicalAttributes: [{ name: "Betriebsdruck", value: "10 bar" }]
+      },
+      [{ ...offerLine, description: "Kappenventil mit Entleerung" }]
+    );
+    expect(result.technicalDeviations).toEqual([]);
+    expect(result.technicalComparisonStatus).toBe("UNRESOLVED");
+    expect(result.unresolvedTechnicalAttributes).toHaveLength(1);
+  });
+
+  it("detects a confirmed connection-size deviation", () => {
+    const result = matchConstraints(
+      {
+        ...basisPosition,
+        manufacturerRequirements: ["Reflex"],
+        description: 'Kappenventil Fabrikat: Reflex Typ: SU G 1" × 1" Komplett',
+        technicalAttributes: [{ name: "Anschluss", value: 'R 1"' }]
+      },
+      [
+        {
+          ...offerLine,
+          manufacturer: "Reflex",
+          description: 'Reflex Kappenventil SU R 3/4" x 3/4"'
+        }
+      ]
+    );
+    expect(result.technicalComparisonStatus).toBe("CONFIRMED_DEVIATION");
+    expect(result.technicalDeviations[0]).toContain(
+      "nachweislich abweichend"
+    );
+  });
+
   it("builds one-to-many bundle links and keeps optional prices out of comparable total", () => {
     const primary = {
       ...offerLine,
@@ -94,6 +158,50 @@ describe("matching", () => {
     });
     expect(option.comparableTotal).toBe(340);
     expect(option.optionalPrices).toEqual([50]);
+  });
+
+  it("does not let a Wahlweise alternative without total block the priced main option", () => {
+    const primary = {
+      ...offerLine,
+      id: "wahlweise-main",
+      interpretedTotalPrice: 300,
+      verificationStatus: "MACHINE_VALIDATED" as const
+    };
+    const alternative = {
+      ...offerLine,
+      id: "wahlweise-alternative",
+      role: "ALTERNATIVE" as const,
+      interpretedUnitPrice: 25,
+      interpretedTotalPrice: null,
+      verificationStatus: "MACHINE_VALIDATED" as const
+    };
+    const link = composeMatchLink({
+      basisPositionIds: [basisPosition.id],
+      offerLineIds: [primary.id, alternative.id],
+      status: "EXACT",
+      score: 1,
+      reasons: ["Direkter LV-Positionsbezug"],
+      confirmedByOperator: true
+    });
+    const [option] = buildSupplierOptions({
+      basisPositions: [
+        {
+          ...basisPosition,
+          requiredScope: [],
+          technicalAttributes: [],
+          manufacturerRequirements: []
+        }
+      ],
+      offers: [primary, alternative].map((line) => ({
+        documentId: "reisser",
+        documentLabel: "Reisser",
+        line
+      })),
+      links: [link]
+    });
+    expect(option.materialScopeStatus).toBe("COMPLETE_MATERIAL_SCOPE");
+    expect(option.comparableTotal).toBe(300);
+    expect(option.optionalPrices).toEqual([]);
   });
 
   it("supports many-to-one and many-to-many link cardinalities", () => {
@@ -178,6 +286,107 @@ describe("matching", () => {
     expect(links.every((link) => link.status === "NOT_OFFERED")).toBe(true);
   });
 
+  it.each([
+    ["2 1 730", "2.1.730"],
+    ["2. 1. 730", "2.1.730"],
+    ["2-1-730", "2.1.730"],
+    ["2.1.740-750", "2.1.740-750"]
+  ])("normalizes LV reference %s without changing the source value", (raw, expected) => {
+    const sourceValue = raw;
+    expect(normalizeLvPositionReference(raw)).toBe(expected);
+    expect(raw).toBe(sourceValue);
+  });
+
+  it("does not interpret an internal supplier number as an LV reference", () => {
+    expect(normalizeLvPositionReference("163000")).toBeNull();
+    const giengerLine = {
+      ...offerLine,
+      id: "gienger-730",
+      sourcePositionNumber: "163000",
+      supplierPositionNumber: "2 1 730"
+    };
+    const [link] = proposeMatches(
+      [{ ...basisPosition, positionNumber: "2.1.730." }],
+      [giengerLine]
+    );
+    expect(link.status).toBe("EXACT");
+    expect(giengerLine.sourcePositionNumber).toBe("163000");
+    expect(giengerLine.supplierPositionNumber).toBe("2 1 730");
+  });
+
+  it("keeps same-reference rows in one priced bundle", () => {
+    const primary = {
+      ...offerLine,
+      id: "gienger-manometer",
+      sourcePositionNumber: "163000",
+      supplierPositionNumber: "2 1 730",
+      groupId: "group-017",
+      description: "Manometer",
+      interpretedTotalPrice: 92.88,
+      verificationStatus: "MACHINE_VALIDATED" as const
+    };
+    const required = {
+      ...offerLine,
+      id: "gienger-valve",
+      sourcePositionNumber: "164000",
+      supplierPositionNumber: "2 1 730",
+      groupId: "group-017",
+      description: "Manometerventil",
+      interpretedTotalPrice: 213.84,
+      verificationStatus: "MACHINE_VALIDATED" as const
+    };
+    const positions = [
+      {
+        ...basisPosition,
+        positionNumber: "2.1.730.",
+        description: "Manometerventil",
+        requiredScope: [],
+        technicalAttributes: []
+      }
+    ];
+    const links = proposeMatches(positions, [primary, required]);
+    const [option] = buildSupplierOptions({
+      basisPositions: positions,
+      offers: [primary, required].map((line) => ({
+        documentId: "gienger",
+        documentLabel: "Gienger",
+        line
+      })),
+      links
+    });
+    expect(option.matchedOfferLineIds).toEqual([primary.id, required.id]);
+    expect(option.primaryPrice).toBe(92.88);
+    expect(option.mandatoryComponentPrices).toEqual([213.84]);
+    expect(option.pricedTotal).toBe(306.72);
+  });
+
+  it("excludes subtotal rows from matching and supplier options", () => {
+    const subtotal = {
+      ...offerLine,
+      id: "subtotal",
+      sourcePositionNumber: null,
+      supplierPositionNumber: null,
+      description: "Objektsumme 017",
+      interpretedTotalPrice: 306.72,
+      role: "PRIMARY" as const
+    };
+    expect(isSubtotalOfferLine(subtotal)).toBe(true);
+    expect(proposeMatches([basisPosition], [subtotal])).toEqual([]);
+    expect(
+      buildSupplierOptions({
+        basisPositions: [basisPosition],
+        offers: [
+          {
+            documentId: "gienger",
+            documentLabel: "Gienger",
+            line: subtotal
+          }
+        ],
+        links: []
+      })
+    ).toEqual([]);
+  });
+
   it("composes only adjacent unnumbered component rows into a bundle", () => {
     const basis = {
       ...basisPosition,
@@ -189,12 +398,22 @@ describe("matching", () => {
       ...offerLine,
       id: "primary-760",
       sourcePositionNumber: "2.1.760",
+      groupId: "supplier-section",
       description: "Kugelhahn 1 1/4 Zoll"
+    };
+    const previous = {
+      ...offerLine,
+      id: "previous-alternative",
+      sourcePositionNumber: null,
+      groupId: "supplier-section",
+      description: "Alternative der vorherigen Position",
+      role: "ALTERNATIVE" as const
     };
     const component = {
       ...offerLine,
       id: "component-760",
       sourcePositionNumber: null,
+      groupId: "supplier-section",
       description: "Dämmschale DN 32",
       role: "PRIMARY" as const
     };
@@ -202,11 +421,179 @@ describe("matching", () => {
       ...offerLine,
       id: "primary-770",
       sourcePositionNumber: "2.1.770",
+      groupId: "supplier-section",
       description: "Kugelhahn 1 1/2 Zoll"
     };
-    const [link] = proposeMatches([basis], [primary, component, next]);
+    const [link] = proposeMatches([basis], [
+      previous,
+      primary,
+      component,
+      next
+    ]);
     expect(link.offerLineIds).toEqual([primary.id, component.id]);
   });
+
+  it.each([
+    ["2.1.760.", "DN 32", 24, 636.24, 1004.16, 928.37],
+    ["2.1.770.", "DN 40", 60, 2278.8, 3193.8, 3396.96],
+    ["2.1.780.", "DN 15", 1, 20.1, 33.44, 34.16],
+    ["2.1.790.", "DN 20", 1, 22.32, 37.32, 37.48]
+  ])(
+    "%s compares complete material bundles independently",
+    (
+      positionNumber,
+      nominalDiameter,
+      quantity,
+      giengerTotal,
+      pumTotal,
+      reisserTotal
+    ) => {
+      const basis = {
+        ...basisPosition,
+        id: `basis-${positionNumber}`,
+        positionNumber,
+        description: `Ventil ${nominalDiameter}`,
+        quantity,
+        unit: "St",
+        technicalAttributes: [
+          { name: "Nennweite", value: nominalDiameter }
+        ],
+        requiredScope: [
+          "Komplett liefern und montieren",
+          "Dichtungs- und Kleinmaterialien einkalkulieren"
+        ],
+        scopeProfile: {
+          directLeafDescription: `Ventil ${nominalDiameter}`,
+          directLeafEvidence: basisPosition.evidence,
+          inheritedExecutionDescription: [
+            "Ausführungsbeschreibung inklusive Wärmedämmschale"
+          ],
+          inheritedMaterialRequirements: [
+            {
+              code: "THERMAL_INSULATION",
+              label: "Wärmedämmschale",
+              category: "MATERIAL" as const,
+              inherited: true,
+              evidence: basisPosition.evidence
+            }
+          ],
+          inheritedInstallationRequirements: [],
+          fullLvExecutionScope: [],
+          procurementMaterialScope: [
+            {
+              code: "MAIN_PRODUCT",
+              label: `Ventil ${nominalDiameter}`,
+              category: "MATERIAL" as const,
+              inherited: false,
+              evidence: basisPosition.evidence
+            },
+            {
+              code: "THERMAL_INSULATION",
+              label: "Wärmedämmschale",
+              category: "MATERIAL" as const,
+              inherited: true,
+              evidence: basisPosition.evidence
+            }
+          ],
+          referenceResolved: true
+        }
+      };
+      const line = (
+        id: string,
+        description: string,
+        total: number,
+        role: "PRIMARY" | "REQUIRED_COMPONENT",
+        sourcePositionNumber: string | null
+      ) => ({
+        ...offerLine,
+        id,
+        sourcePositionNumber,
+        supplierPositionNumber: sourcePositionNumber,
+        description,
+        quantity,
+        unit: "St",
+        role,
+        groupId: id.split("-")[0],
+        interpretedTotalPrice: total,
+        verificationStatus: "MACHINE_VALIDATED" as const
+      });
+      const gienger = line(
+        "gienger-primary",
+        `Ventil ${nominalDiameter}`,
+        giengerTotal,
+        "PRIMARY",
+        positionNumber
+      );
+      const pumPrimary = line(
+        "pum-primary",
+        `Ventil ${nominalDiameter}`,
+        pumTotal - 10,
+        "PRIMARY",
+        positionNumber
+      );
+      const pumShell = line(
+        "pum-shell",
+        `Wärmedämmschale ${nominalDiameter}`,
+        10,
+        "REQUIRED_COMPONENT",
+        positionNumber
+      );
+      const reisserPrimary = line(
+        "reisser-primary",
+        `Ventil ${nominalDiameter}`,
+        reisserTotal - 10,
+        "PRIMARY",
+        positionNumber
+      );
+      const reisserShell = line(
+        "reisser-shell",
+        `Wärmedämmschale ${nominalDiameter}`,
+        10,
+        "REQUIRED_COMPONENT",
+        positionNumber
+      );
+      const offers = [
+        { documentId: "gienger", documentLabel: "Gienger", line: gienger },
+        { documentId: "pum", documentLabel: "P&M", line: pumPrimary },
+        { documentId: "pum", documentLabel: "P&M", line: pumShell },
+        {
+          documentId: "reisser",
+          documentLabel: "Reisser",
+          line: reisserPrimary
+        },
+        {
+          documentId: "reisser",
+          documentLabel: "Reisser",
+          line: reisserShell
+        }
+      ];
+      const options = buildSupplierOptions({
+        basisPositions: [basis],
+        offers,
+        links: proposeMatches([basis], offers)
+      });
+      const bySupplier = new Map(
+        options.map((option) => [option.supplierDocumentId, option])
+      );
+
+      expect(bySupplier.get("gienger")).toMatchObject({
+        materialScopeStatus: "PARTIAL_MATERIAL_SCOPE",
+        pricedTotal: giengerTotal,
+        comparableTotal: null,
+        missingComponents: ["Wärmedämmschale"]
+      });
+      expect(bySupplier.get("pum")).toMatchObject({
+        materialScopeStatus: "COMPLETE_MATERIAL_SCOPE",
+        pricedTotal: pumTotal,
+        comparableTotal: pumTotal
+      });
+      expect(bySupplier.get("reisser")).toMatchObject({
+        materialScopeStatus: "COMPLETE_MATERIAL_SCOPE",
+        pricedTotal: reisserTotal,
+        comparableTotal: reisserTotal
+      });
+    }
+  );
 
   it("compares piece-unit aliases and standard DN/inch equivalents", () => {
     const basis = {
@@ -262,7 +649,8 @@ describe("matching", () => {
       links: []
     });
     expect(covered.offerAvailability).toBe("COVERED_WITHOUT_OFFER");
-    expect(covered.status).toBe("NO_OFFER");
+    expect(covered.status).toBe("MATCHING_UNCLEAR");
+    expect(covered.materialScopeStatus).toBe("UNKNOWN");
     expect(uncovered.offerAvailability).toBe("NOT_COVERED");
     expect(uncovered.status).toBe("MATCHING_UNCLEAR");
   });
@@ -281,7 +669,7 @@ describe("matching", () => {
     expect(result.positiveReasons.join(" ")).toContain("ohne Herstellerbindung");
   });
 
-  it("keeps a confirmed material price out of comparable total when required scope differs", () => {
+  it("does not let an installation phrase block material comparison", () => {
     const primary = {
       ...offerLine,
       id: "scope-primary",
@@ -312,8 +700,8 @@ describe("matching", () => {
       links: [link]
     });
     expect(option.pricedTotal).toBe(300);
-    expect(option.comparableTotal).toBeNull();
-    expect(option.status).toBe("DIFFERENT_SCOPE_OF_SUPPLY");
+    expect(option.comparableTotal).toBe(300);
+    expect(option.materialScopeStatus).toBe("COMPLETE_MATERIAL_SCOPE");
   });
 
   it("allows a clear option without automatically selecting its supplier", () => {

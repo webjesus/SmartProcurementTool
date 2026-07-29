@@ -17,6 +17,14 @@ const toneMap: Record<string, string> = {
   WARNING: "warning",
   VISUAL_ONLY_UNCONFIRMED: "warning",
   "Prüfung offen": "warning",
+  "Automatisch ausgewählt": "success",
+  "Entscheidung durch Leitung erforderlich": "warning",
+  "Technische Systemprüfung erforderlich": "danger",
+  "Manuell entschieden": "success",
+  "Zurückgestellt": "muted",
+  "Kein vergleichbares Angebot": "muted",
+  "Verarbeitung ausstehend": "warning",
+  "Verarbeitungsfehler": "danger",
   "3 Hinweise": "warning"
 };
 

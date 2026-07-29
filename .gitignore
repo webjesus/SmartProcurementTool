@@ -4,11 +4,15 @@
 /storage/
 /tmp/
 /local-data/
+/.postgres-local/
 *.local.db
 *.local.sqlite
 /docs/CORPUS_REPORT.local.md
 /docs/HISTORICAL_EVALUATION.local.md
 /docs/PILOT_COMPARISON_REVIEW.local.md
+/docs/GIENGER_ROLE_AUDIT.local.md
+/docs/TECHNICAL_CORPUS_AUDIT.local.md
+/docs/DEMO_READINESS_AUDIT.local.md
 
 # Secrets
 .env

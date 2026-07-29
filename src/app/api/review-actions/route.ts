@@ -2,14 +2,26 @@ import path from "node:path";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import {
+  DecisionEvidenceSnapshotSchema,
   MatchReviewActionSchema,
-  SupplierDecisionSchema,
-  type OfferLine
+  SupplierDecisionReviewActionSchema,
+  SupplierDecisionV2Schema,
+  type OfferLine,
+  type SupplierDecisionV2
 } from "@/domain/contracts";
+import { CURRENT_DECISION_REASON_CATALOG } from "@/domain/decision-catalog";
+import {
+  SupplierDecisionDraftSchema,
+  buildDecisionEvidenceSnapshot,
+  validateDecisionEvidence,
+  validateDecisionReasons,
+  validateManagerDecisionComment
+} from "@/domain/decision";
 import {
   composeMatchLink,
   refreshPilotAnalysisForPositions
 } from "@/domain/matching";
+import { selectUniqueLowestComparableOption } from "@/domain/project-review";
 import { applyOfferLineReview, type ReviewAction } from "@/domain/review";
 import {
   LocalPilotPersistence,
@@ -35,11 +47,6 @@ const MatchActionInput = MatchReviewActionSchema.omit({
   id: true,
   timestamp: true
 }).extend({ kind: z.literal("MATCH") });
-
-const SupplierDecisionInput = SupplierDecisionSchema.omit({
-  id: true,
-  timestamp: true
-}).extend({ kind: z.literal("DECISION") });
 
 type StoredReviewAction = z.infer<typeof ReviewActionInput> & {
   id: string;
@@ -201,7 +208,9 @@ export async function POST(request: Request) {
   }
 
   if (process.env.LOCAL_CORPUS_ENABLED === "true" && body?.kind === "DECISION") {
-    const parsedDecision = SupplierDecisionInput.safeParse(body);
+    const { kind: _kind, ...decisionBody } = body as Record<string, unknown>;
+    void _kind;
+    const parsedDecision = SupplierDecisionDraftSchema.safeParse(decisionBody);
     if (!parsedDecision.success) {
       return NextResponse.json(
         { error: "INVALID_SUPPLIER_DECISION", details: parsedDecision.error.flatten() },
@@ -213,36 +222,246 @@ export async function POST(request: Request) {
       true
     );
     const state = await persistence.read();
-    if (
-      !state.analysis?.basisPositions.some(
-        (position) => position.id === parsedDecision.data.basisPositionId
-      )
-    ) {
+    const basis = state.analysis?.basisPositions.find(
+      (position) => position.id === parsedDecision.data.basisPositionId
+    );
+    if (!basis) {
       return NextResponse.json({ error: "BASIS_POSITION_NOT_FOUND" }, { status: 404 });
     }
-    const timestamp = new Date().toISOString();
-    const decision = SupplierDecisionSchema.parse({
-      ...parsedDecision.data,
+    const previousDecision =
+      state.supplierDecisions
+        .filter((item) => item.basisPositionId === basis.id)
+        .at(-1) ?? null;
+    const automaticBaseline = state.analysis
+      ? selectUniqueLowestComparableOption({
+          basisPositionId: basis.id,
+          options: state.analysis.supplierOptions.filter((candidate) =>
+            candidate.basisPositionIds.includes(basis.id)
+          ),
+          coverage: {
+            activeSupplierDocumentIds: new Set(
+              state.analysis.supplierDocuments.map((document) => document.id)
+            ),
+            allRelevantOffersProcessed: true,
+            supplierCoverageSufficient: true,
+            projectContextConfirmed: true,
+            disciplineContextConfirmed: true,
+            materialUncertainty: false
+          },
+          calculatedAt: state.analysis.generatedAt
+        })
+      : null;
+    const decidedAt = new Date().toISOString();
+    let decision: SupplierDecisionV2;
+    if (parsedDecision.data.status === "SELECTED") {
+      if (
+        parsedDecision.data.decisionType === "AUTOMATIC_OVERRIDE" &&
+        ((!previousDecision ||
+          !("decisionType" in previousDecision) ||
+          !["AUTOMATIC_LOWEST_PRICE", "AUTOMATIC_OVERRIDE"].includes(
+            previousDecision.decisionType ?? ""
+          )) &&
+          automaticBaseline?.status !== "AUTO_SELECTED_LOWEST_PRICE")
+      ) {
+        return NextResponse.json(
+          { error: "AUTOMATIC_DECISION_NOT_FOUND" },
+          { status: 409 }
+        );
+      }
+      const option = state.analysis?.supplierOptions.find(
+        (item) =>
+          item.id === parsedDecision.data.selectedSupplierOptionId &&
+          item.basisPositionIds.includes(basis.id)
+      );
+      if (!option) {
+        return NextResponse.json(
+          { error: "SUPPLIER_OPTION_NOT_FOUND" },
+          { status: 404 }
+        );
+      }
+      const reasonValidation = validateDecisionReasons(
+        parsedDecision.data.reasonCodes,
+        parsedDecision.data.comment,
+        CURRENT_DECISION_REASON_CATALOG
+      );
+      if (!reasonValidation.valid) {
+        return NextResponse.json(
+          { error: "DECISION_REASON_INVALID", details: reasonValidation.errors },
+          { status: 422 }
+        );
+      }
+      const commentValidation = validateManagerDecisionComment({
+        status: parsedDecision.data.status,
+        decisionType: parsedDecision.data.decisionType,
+        comment: parsedDecision.data.comment
+      });
+      if (!commentValidation.valid) {
+        return NextResponse.json(
+          {
+            error: "DECISION_COMMENT_REQUIRED",
+            details: commentValidation.errors
+          },
+          { status: 422 }
+        );
+      }
+      const selectedSupplierLineIds =
+        parsedDecision.data.selectedSupplierLineIds ??
+        option.matchedOfferLineIds;
+      if (
+        selectedSupplierLineIds.length === 0 ||
+        selectedSupplierLineIds.some(
+          (lineId) => !option.matchedOfferLineIds.includes(lineId)
+        )
+      ) {
+        return NextResponse.json(
+          { error: "SELECTED_SUPPLIER_LINES_INVALID" },
+          { status: 422 }
+        );
+      }
+      const evidenceSnapshot = DecisionEvidenceSnapshotSchema.parse(
+        buildDecisionEvidenceSnapshot({
+          state,
+          basis,
+          option,
+          selectedLineIds: selectedSupplierLineIds,
+          capturedAt: decidedAt
+        })
+      );
+      const evidenceValidation = validateDecisionEvidence(evidenceSnapshot);
+      if (!evidenceValidation.valid) {
+        return NextResponse.json(
+          { error: "DECISION_EVIDENCE_INVALID", details: evidenceValidation.errors },
+          { status: 422 }
+        );
+      }
+      decision = SupplierDecisionV2Schema.parse({
+        id: crypto.randomUUID(),
+        basisPositionId: basis.id,
+        supplierDocumentId: option.supplierDocumentId,
+        status: "SELECTED",
+        selectedSupplierOptionId: option.id,
+        selectedSupplierLineIds: evidenceSnapshot.selectedLines.map(
+          (line) => line.lineId
+        ),
+        reasonCodes: parsedDecision.data.reasonCodes,
+        comment: parsedDecision.data.comment.trim(),
+        evidenceSnapshot,
+        documentRevisionIds: evidenceSnapshot.documentRevisionIds,
+        decidedBy: parsedDecision.data.decidedBy,
+        decidedAt,
+        catalogVersion: CURRENT_DECISION_REASON_CATALOG.version,
+        previousDecisionId: previousDecision?.id ?? null,
+        decisionType:
+          parsedDecision.data.decisionType ?? "MANUAL_SELECTION"
+      });
+    } else {
+      const commentValidation = validateManagerDecisionComment({
+        status: parsedDecision.data.status,
+        comment: parsedDecision.data.comment
+      });
+      if (!commentValidation.valid) {
+        return NextResponse.json(
+          {
+            error: "DECISION_COMMENT_REQUIRED",
+            details: commentValidation.errors
+          },
+          { status: 422 }
+        );
+      }
+      if (parsedDecision.data.status === "NONE_CORRECT") {
+        const reasonValidation = validateDecisionReasons(
+          parsedDecision.data.reasonCodes,
+          parsedDecision.data.comment,
+          CURRENT_DECISION_REASON_CATALOG
+        );
+        if (!reasonValidation.valid) {
+          return NextResponse.json(
+            { error: "DECISION_REASON_INVALID", details: reasonValidation.errors },
+            { status: 422 }
+          );
+        }
+      }
+      const evidenceSnapshot =
+        parsedDecision.data.status === "DEFERRED"
+          ? null
+          : DecisionEvidenceSnapshotSchema.parse(
+              buildDecisionEvidenceSnapshot({
+                state,
+                basis,
+                option: null,
+                capturedAt: decidedAt
+              })
+            );
+      if (
+        evidenceSnapshot &&
+        evidenceSnapshot.basisPosition.sources.length === 0
+      ) {
+        return NextResponse.json(
+          { error: "BASIS_EVIDENCE_REQUIRED" },
+          { status: 422 }
+        );
+      }
+      decision = SupplierDecisionV2Schema.parse({
+        id: crypto.randomUUID(),
+        basisPositionId: basis.id,
+        supplierDocumentId: null,
+        status: parsedDecision.data.status,
+        selectedSupplierOptionId: null,
+        selectedSupplierLineIds: [],
+        reasonCodes: parsedDecision.data.reasonCodes,
+        comment: parsedDecision.data.comment.trim(),
+        evidenceSnapshot,
+        documentRevisionIds: evidenceSnapshot?.documentRevisionIds ?? [],
+        decidedBy: parsedDecision.data.decidedBy,
+        decidedAt,
+        catalogVersion: CURRENT_DECISION_REASON_CATALOG.version,
+        previousDecisionId: previousDecision?.id ?? null,
+        decisionType:
+          parsedDecision.data.status === "DEFERRED"
+            ? "DEFERRED"
+            : parsedDecision.data.status
+      });
+    }
+    const reviewAction = SupplierDecisionReviewActionSchema.parse({
       id: crypto.randomUUID(),
-      timestamp
+      supplierDecisionId: decision.id,
+      basisPositionId: decision.basisPositionId,
+      action:
+        decision.decisionType === "AUTOMATIC_OVERRIDE"
+          ? "AUTOMATIC_OVERRIDE"
+          : decision.status === "SELECTED"
+            ? "MANUAL_SELECTION"
+            : decision.status === "DEFERRED"
+              ? "DEFER"
+              : decision.status === "NONE_CORRECT"
+                ? "NONE_CORRECT"
+                : "REQUEST_ADDITIONAL_CHECK",
+      previousDecisionId: decision.previousDecisionId,
+      operator: decision.decidedBy,
+      comment: decision.comment,
+      timestamp: decidedAt
     });
     const auditEvent = {
       id: decision.id,
       issueId: `decision:${decision.basisPositionId}`,
-      action: decision.status === "SELECTED" ? "DECIDE" : "DEFER",
-      previousValue:
-        state.supplierDecisions.find(
-          (item) => item.basisPositionId === decision.basisPositionId
-        ) ?? null,
+      action:
+        decision.status === "SELECTED"
+          ? "DECIDE"
+          : decision.status === "NONE_CORRECT"
+            ? "NONE_CORRECT"
+            : decision.status === "ADDITIONAL_CHECK_REQUESTED"
+              ? "REQUEST_ADDITIONAL_CHECK"
+              : "DEFER",
+      previousValue: previousDecision,
       newValue: decision,
-      operator: decision.operator,
-      timestamp,
+      operator: decision.decidedBy,
+      timestamp: decidedAt,
       reason: "Supplier decision",
       comment: decision.comment,
       entityType: "SupplierDecision",
       entityId: decision.basisPositionId
     };
-    await persistence.appendSupplierDecision(decision, auditEvent);
+    await persistence.appendSupplierDecision(decision, auditEvent, reviewAction);
     return NextResponse.json(
       { supplierDecision: decision, auditEvent, persistence: "LOCAL_DURABLE" },
       { status: 201, headers: { "x-spt-persistence": "local-durable" } }

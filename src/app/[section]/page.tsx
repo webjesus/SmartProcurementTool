@@ -1,4 +1,4 @@
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { SectionView, type SectionName } from "@/components/section-view";
 
 const sectionNames = [
@@ -22,5 +22,11 @@ export default async function SectionPage({
 }) {
   const { section } = await params;
   if (!sectionNames.some((candidate) => candidate === section)) notFound();
+  if (
+    process.env.DEV_UI_ENABLED !== "true" &&
+    section === "entscheidungen"
+  ) {
+    redirect("/lv-vergleich#entscheidungspruefung");
+  }
   return <SectionView section={section as SectionName} />;
 }

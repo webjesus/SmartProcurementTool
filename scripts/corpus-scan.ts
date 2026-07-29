@@ -3,6 +3,7 @@ import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { PdfJsDocumentParser } from "../src/pdf/pdfjs-parser";
 import type { Discipline, DocumentType, PageMode } from "../src/domain/contracts";
+import { normalizeLvPositionReference } from "../src/domain/matching";
 
 interface PageInventory {
   pageNumber: number;
@@ -10,6 +11,7 @@ interface PageInventory {
   textItems: number;
   characters: number;
   images: number;
+  lvPositionReferences: string[];
 }
 
 interface DocumentInventory {
@@ -25,11 +27,25 @@ interface DocumentInventory {
   dateHints: string[];
   layoutPatterns: string[];
   risks: string[];
+  projectKey?: string;
+  supplier?: string;
+  offerNumber?: string;
+  revision?: number;
+  active?: boolean;
+  supersededByDocumentId?: string;
+  relevantPositionNumbers?: string[];
 }
 
 interface CorpusOverride {
   documentType?: DocumentType;
   discipline?: Discipline;
+  projectKey?: string;
+  supplier?: string;
+  offerNumber?: string;
+  revision?: number;
+  active?: boolean;
+  supersededByDocumentId?: string;
+  relevantPositionNumbers?: string[];
   note?: string;
 }
 
@@ -135,6 +151,16 @@ function dateHints(text: string): string[] {
   ).slice(0, 5);
 }
 
+function lvPositionReferences(text: string): string[] {
+  return Array.from(
+    new Set(
+      [...text.matchAll(/\b\d{1,2}\s*(?:[.\s-]\s*)\d{1,3}\s*(?:[.\s-]\s*)\d{2,4}(?:\s*[-–—]\s*\d{2,4})?/g)]
+        .map((match) => normalizeLvPositionReference(match[0]))
+        .filter((value): value is string => value !== null)
+    )
+  );
+}
+
 async function inspectDocument(filePath: string): Promise<DocumentInventory> {
   const data = new Uint8Array(await readFile(filePath));
   const sha256 = createHash("sha256").update(data).digest("hex");
@@ -151,7 +177,10 @@ async function inspectDocument(filePath: string): Promise<DocumentInventory> {
       mode: page.mode,
       textItems: page.textItems.length,
       characters,
-      images: page.imageCount
+      images: page.imageCount,
+      lvPositionReferences: lvPositionReferences(
+        page.textItems.map((item) => item.normalizedText).join(" ")
+      )
     });
     if (pageNumber <= 3) {
       sampleText += `\n${page.textItems.map((item) => item.normalizedText).join(" ")}`;
@@ -281,6 +310,17 @@ async function main() {
             ...document,
             documentType: override.documentType ?? document.documentType,
             discipline: override.discipline ?? document.discipline,
+            projectKey: override.projectKey ?? document.projectKey,
+            supplier: override.supplier ?? document.supplier,
+            offerNumber: override.offerNumber ?? document.offerNumber,
+            revision: override.revision ?? document.revision,
+            active: override.active ?? document.active,
+            supersededByDocumentId:
+              override.supersededByDocumentId ??
+              document.supersededByDocumentId,
+            relevantPositionNumbers:
+              override.relevantPositionNumbers ??
+              document.relevantPositionNumbers,
             roleConfidence: "OPERATOR",
             risks: document.risks.filter(
               (risk) => risk !== "document type requires operator confirmation"

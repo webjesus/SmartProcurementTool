@@ -10,9 +10,11 @@ import type {
   OfferLine,
   PilotAnalysis,
   RecommendationStatus,
-  SupplierOption
+  SupplierMaterialScopeStatus,
+  SupplierOption,
+  TechnicalComparisonStatus
 } from "@/domain/contracts";
-import { recommendationStatus } from "@/domain/recommendation";
+import { supplierTextSatisfiesMaterialRequirement } from "@/domain/basis-scope";
 import type { z } from "zod";
 
 type MatchKind = z.infer<typeof MatchKindSchema>;
@@ -70,18 +72,33 @@ interface PositionReference {
   end: number;
 }
 
-function parsePositionReference(value: string | null | undefined): PositionReference | null {
+export function normalizeLvPositionReference(
+  value: string | null | undefined
+): string | null {
   const compact = (value ?? "")
     .trim()
-    .replace(/\s+/g, "")
-    .replace(/[.,;:]+$/g, "");
+    .replace(/[.,;:]+$/g, "")
+    .replace(/[–—]/g, "-");
   if (!compact) return null;
-  const [left, right] = compact.split("-", 2);
-  const leftParts = left.match(/\d+/g)?.map(Number) ?? [];
-  if (leftParts.length < 2) return null;
+  const numbers = compact.match(/\d+/g)?.map(Number) ?? [];
+  if (![3, 4, 6].includes(numbers.length)) return null;
+  const start = numbers.slice(0, 3).join(".");
+  if (numbers.length === 3) return start;
+  const end =
+    numbers.length === 4 ? String(numbers[3]) : numbers.slice(3, 6).join(".");
+  return `${start}-${end}`;
+}
+
+function parsePositionReference(
+  value: string | null | undefined
+): PositionReference | null {
+  const normalized = normalizeLvPositionReference(value);
+  if (!normalized) return null;
+  const [left, right] = normalized.split("-", 2);
+  const leftParts = left.split(".").map(Number);
   const start = leftParts.at(-1)!;
   const prefix = leftParts.slice(0, -1).join(".");
-  const rightParts = right?.match(/\d+/g)?.map(Number) ?? [];
+  const rightParts = right?.split(".").map(Number) ?? [];
   const end = rightParts.length > 0 ? rightParts.at(-1)! : start;
   return { prefix, start: Math.min(start, end), end: Math.max(start, end) };
 }
@@ -104,6 +121,27 @@ function positionReferenceMatches(
 function samePosition(basis: BasisPosition, offer: OfferLine) {
   return [offer.sourcePositionNumber, offer.supplierPositionNumber]
     .some((value) => positionReferenceMatches(basis.positionNumber, value));
+}
+
+function offerPositionReferences(offer: OfferLine): string[] {
+  return Array.from(
+    new Set(
+      [offer.sourcePositionNumber, offer.supplierPositionNumber]
+        .map(normalizeLvPositionReference)
+        .filter((value): value is string => value !== null)
+    )
+  );
+}
+
+export function isSubtotalOfferLine(line: OfferLine): boolean {
+  if (line.role === "NOTE") return true;
+  const description = normalize(line.description);
+  return (
+    offerPositionReferences(line).length === 0 &&
+    /^(objektsumme|zwischensumme|subtotal|section total|summe)\b/.test(
+      description
+    )
+  );
 }
 
 function canonicalUnit(value: string | null | undefined): string | null {
@@ -176,9 +214,102 @@ function attributeMatches(
   return Boolean(expected && compactComparableText(offerText).includes(expected));
 }
 
+function basisTypeIdentifier(description: string): string | null {
+  const match = description.match(
+    /\bTyp\s*:\s*(.+?)(?=\s+(?:Komplett|Fabrikat|Art\.?-?Nr\.?)\b|$)/i
+  );
+  return match?.[1]?.trim() || null;
+}
+
+function normalizedModelIdentifier(value: string): string {
+  return normalize(value)
+    .split(" ")
+    .filter((token) => !["typ", "g", "r", "x", "zoll"].includes(token))
+    .join("");
+}
+
+function modelIdentifierMatchesOffer(
+  typeIdentifier: string,
+  offerText: string
+): boolean {
+  const model = normalizedModelIdentifier(typeIdentifier);
+  const normalizedOffer = normalize(offerText);
+  if (normalizedModelIdentifier(offerText).includes(model)) return true;
+  const compactLetterNumber = model.match(/^([a-z]+)(\d{2,})$/);
+  if (!compactLetterNumber) return false;
+  const [, family, number] = compactLetterNumber;
+  return new RegExp(
+    `\\b${family}\\b(?:\\s+\\p{L}[\\p{L}\\p{N}-]*){0,2}\\s+${number}\\b`,
+    "iu"
+  ).test(normalizedOffer);
+}
+
+function manufacturerRequirementMatches(
+  requirements: readonly string[],
+  manufacturers: readonly string[]
+): boolean {
+  if (requirements.length === 0 || manufacturers.length === 0) return false;
+  return requirements.some((requirement) =>
+    manufacturers.some(
+      (manufacturer) =>
+        normalize(requirement).includes(normalize(manufacturer)) ||
+        normalize(manufacturer).includes(normalize(requirement))
+    )
+  );
+}
+
+function exactProductIdentityConfirmed(
+  basis: BasisPosition,
+  offerText: string,
+  supplierManufacturers: readonly string[]
+): boolean {
+  const type = basisTypeIdentifier(basis.description);
+  if (
+    !type ||
+    !manufacturerRequirementMatches(
+      basis.manufacturerRequirements,
+      supplierManufacturers
+    )
+  ) {
+    return false;
+  }
+  return (
+    normalizedModelIdentifier(type).length >= 2 &&
+    modelIdentifierMatchesOffer(type, offerText)
+  );
+}
+
+function attributeComparison(
+  attribute: BasisPosition["technicalAttributes"][number],
+  offerText: string
+): "MATCH" | "MISMATCH" | "UNRESOLVED" {
+  const attributeName = normalize(attribute.name);
+  if (/\b(anschluss|nennweite|durchmesser|dn)\b/.test(attributeName)) {
+    const expectedDiameters = offeredNominalDiameters(attribute.value);
+    const offeredDiameters = offeredNominalDiameters(offerText);
+    if (expectedDiameters.size === 1 && offeredDiameters.size > 0) {
+      return [...expectedDiameters].some((diameter) =>
+        offeredDiameters.has(diameter)
+      )
+        ? "MATCH"
+        : "MISMATCH";
+    }
+  }
+  if (attributeMatches(attribute, offerText)) return "MATCH";
+  return "UNRESOLVED";
+}
+
 function hasUnresolvedBasisReference(basis: BasisPosition): boolean {
+  if (basis.scopeProfile?.referenceResolved) return false;
   const text = normalize([basis.description, ...basis.notes].join(" "));
   return /\b(ausfuhrungsbeschreibung|specification|anlage|appendix)\b/.test(
+    text
+  );
+}
+
+function executionOnlyRequirement(value: string): boolean {
+  const text = normalize(value);
+  return /\b(montier|montage|installation|arbeits|dichtung|kleinmaterial|inbetrieb|liefer)\w*/i.test(
     text
   );
 }
@@ -249,12 +380,17 @@ export function generateMatchCandidates(
   basis: BasisPosition[],
   offers: OfferLineContext[]
 ): MatchCandidate[] {
+  const matchableOffers = offers.filter(
+    (offer) => !isSubtotalOfferLine(offer.line)
+  );
   const candidates: MatchCandidate[] = [];
   for (const [basisIndex, position] of basis.entries()) {
     if (position.heading) continue;
-    const supplierIds = Array.from(new Set(offers.map((offer) => offer.documentId)));
+    const supplierIds = Array.from(
+      new Set(matchableOffers.map((offer) => offer.documentId))
+    );
     for (const supplierId of supplierIds) {
-      const supplierOffers = offers.filter(
+      const supplierOffers = matchableOffers.filter(
         (offer) => offer.documentId === supplierId
       );
       const ranked = supplierOffers
@@ -338,7 +474,13 @@ function candidateRolePriority(role: OfferLine["role"]): number {
   if (role === "PRIMARY") return 0;
   if (role === "ALTERNATIVE" || role === "OPTIONAL") return 1;
   if (role === "PROVIDED_BY_OTHERS" || role === "NOT_OFFERED") return 2;
-  if (role === "REQUIRED_COMPONENT" || role === "INCLUDED_ACCESSORY") return 3;
+  if (
+    ["REQUIRED_COMPONENT", "MANDATORY_COMPONENT", "INCLUDED_ACCESSORY"].includes(
+      role
+    )
+  ) {
+    return 3;
+  }
   return 4;
 }
 
@@ -354,14 +496,43 @@ function anchoredBundle(
     (context) => context.line.id === anchor.line.id
   );
   if (anchorIndex < 0) return [anchor];
-  const result: OfferLineContext[] = [];
-  for (let index = anchorIndex; index < supplier.length; index += 1) {
-    const context = supplier[index];
-    const source = context.line.sourcePositionNumber;
+  let startIndex = anchorIndex;
+  while (startIndex > 0) {
+    const previous = supplier[startIndex - 1];
+    const references = offerPositionReferences(previous.line);
+    const sameGroup =
+      !anchor.line.groupId ||
+      !previous.line.groupId ||
+      previous.line.groupId === anchor.line.groupId;
     if (
-      index > anchorIndex &&
-      source &&
-      !positionReferenceMatches(basis.positionNumber, source)
+      !sameGroup ||
+      references.length === 0 ||
+      !references.some((reference) =>
+        positionReferenceMatches(basis.positionNumber, reference)
+      )
+    ) {
+      break;
+    }
+    startIndex -= 1;
+  }
+  const result: OfferLineContext[] = [];
+  for (let index = startIndex; index < supplier.length; index += 1) {
+    const context = supplier[index];
+    const references = offerPositionReferences(context.line);
+    if (
+      index > startIndex &&
+      anchor.line.groupId &&
+      context.line.groupId &&
+      context.line.groupId !== anchor.line.groupId
+    ) {
+      break;
+    }
+    if (
+      index > startIndex &&
+      references.length > 0 &&
+      !references.some((reference) =>
+        positionReferenceMatches(basis.positionNumber, reference)
+      )
     ) {
       break;
     }
@@ -378,7 +549,7 @@ export function proposeMatches(
     "line" in item
       ? item
       : { documentId: "offer", documentLabel: "Angebot", line: item }
-  );
+  ).filter((context) => !isSubtotalOfferLine(context.line));
   const candidates = generateMatchCandidates(basis, contexts);
   const links: MatchLink[] = [];
   for (const position of basis.filter((item) => !item.heading)) {
@@ -422,7 +593,9 @@ export function proposeMatches(
           ? "NOT_OFFERED"
           : candidate.offer.line.role === "ALTERNATIVE"
             ? "ALTERNATIVE"
-            : candidate.offer.line.role === "REQUIRED_COMPONENT"
+            : ["REQUIRED_COMPONENT", "MANDATORY_COMPONENT"].includes(
+                  candidate.offer.line.role
+                )
               ? "REQUIRED_COMPONENT"
               : samePosition(position, candidate.offer.line)
                 ? "EXACT"
@@ -473,7 +646,11 @@ export function matchConstraints(
   reasons: string[];
   positiveReasons: string[];
   technicalDeviations: string[];
+  technicalComparisonStatus: TechnicalComparisonStatus;
+  unresolvedTechnicalAttributes: string[];
+  productIdentityConfirmed: boolean;
   scopeDifferences: string[];
+  missingMaterialComponents: string[];
 } {
   const pricedScope = offers.filter(
     (line) =>
@@ -499,9 +676,12 @@ export function matchConstraints(
         ...pricedScope.filter(
           (line) =>
             line.id !== primary.id &&
-            ["REQUIRED_COMPONENT", "INCLUDED_ACCESSORY", "PRIMARY"].includes(
-              line.role
-            )
+            [
+              "REQUIRED_COMPONENT",
+              "MANDATORY_COMPONENT",
+              "INCLUDED_ACCESSORY",
+              "PRIMARY"
+            ].includes(line.role)
         )
       ]
     : candidateScope;
@@ -525,45 +705,86 @@ export function matchConstraints(
   const combinedDescription = candidateScope
     .map((line) => line.description)
     .join(" ");
-  const technicalDeviations = basis.technicalAttributes
-    .filter((attribute) => !attributeMatches(attribute, combinedDescription))
-    .map(
-      (attribute) =>
-        `Technische Eigenschaft abweichend oder nicht belegt: ${attribute.name} erwartet ${attribute.value}`
-    );
   const supplierManufacturers = Array.from(
     new Set(candidateScope.map((line) => line.manufacturer).filter(Boolean))
   ) as string[];
-  const normalizedManufacturers = supplierManufacturers.map(normalize);
+  const productIdentityConfirmed = exactProductIdentityConfirmed(
+    basis,
+    combinedDescription,
+    supplierManufacturers
+  );
+  const attributeComparisons = basis.technicalAttributes.map((attribute) => ({
+    attribute,
+    result: attributeComparison(attribute, combinedDescription)
+  }));
+  const technicalDeviations = attributeComparisons
+    .filter(({ result }) => result === "MISMATCH")
+    .map(
+      ({ attribute }) =>
+        `Technische Eigenschaft nachweislich abweichend: ${attribute.name} erwartet ${attribute.value}`
+    );
+  const unresolvedTechnicalAttributes = productIdentityConfirmed
+    ? []
+    : attributeComparisons
+        .filter(({ result }) => result === "UNRESOLVED")
+        .map(
+          ({ attribute }) =>
+            `Technische Eigenschaft nicht ausreichend belegt: ${attribute.name} erwartet ${attribute.value}`
+        );
   const manufacturerMismatch =
     basis.manufacturerRequirements.length > 0 &&
-    !basis.manufacturerRequirements.some((requirement) =>
-      normalizedManufacturers.some(
-        (manufacturer) =>
-          normalize(requirement).includes(manufacturer) ||
-          manufacturer.includes(normalize(requirement))
-      )
+    !manufacturerRequirementMatches(
+      basis.manufacturerRequirements,
+      supplierManufacturers
     );
   if (manufacturerMismatch) {
     technicalDeviations.push(
       `Herstelleranforderung nicht erfüllt: ${basis.manufacturerRequirements.join(", ")}`
     );
   }
-  const technicalCompatible = technicalDeviations.length === 0;
-  const scopeDifferences = basis.requiredScope
+  const technicalComparisonStatus: TechnicalComparisonStatus =
+    technicalDeviations.length > 0
+      ? "CONFIRMED_DEVIATION"
+      : basis.technicalAttributes.length === 0 ||
+          productIdentityConfirmed ||
+          attributeComparisons.every(({ result }) => result === "MATCH")
+        ? "CONFIRMED_COMPATIBLE"
+        : "UNRESOLVED";
+  const technicalCompatible =
+    technicalComparisonStatus === "CONFIRMED_COMPATIBLE";
+  const materialRequirements =
+    basis.scopeProfile?.procurementMaterialScope.filter(
+      (scope) => scope.code !== "MAIN_PRODUCT"
+    ) ??
+    basis.requiredScope
+      .filter((scope) => !executionOnlyRequirement(scope))
+      .map((scope) => ({
+        code: normalize(scope).toLocaleUpperCase("de").replace(/\s+/g, "_"),
+        label: scope,
+        category: "MATERIAL" as const,
+        inherited: false,
+        evidence: basis.evidence
+      }));
+  const missingMaterialComponents = materialRequirements
     .filter(
-      (scope) =>
-        !normalize(combinedDescription).includes(normalize(scope)) &&
-        tokenSimilarity(scope, combinedDescription) < 0.32
+      (requirement) =>
+        !(productIdentityConfirmed && !requirement.inherited) &&
+        !supplierTextSatisfiesMaterialRequirement(
+          requirement,
+          combinedDescription
+        )
     )
-    .map((scope) => `Pflichtumfang nicht belegt: ${scopeLabel(scope)}`);
+    .map((requirement) => requirement.label);
+  const scopeDifferences = missingMaterialComponents.map(
+    (component) => `Pflichtkomponente fehlt: ${scopeLabel(component)}`
+  );
   const requiredScopeComplete =
     !offers.some(
       (line) =>
         ["NOT_OFFERED", "PROVIDED_BY_OTHERS", "PRICE_ON_REQUEST"].includes(
           line.role
         )
-    ) && scopeDifferences.length === 0;
+    ) && missingMaterialComponents.length === 0;
   const optionalSeparated = offers.every(
     (line) => line.role !== "OPTIONAL" || Boolean(line.groupId)
   );
@@ -572,15 +793,28 @@ export function matchConstraints(
       candidateScope.every((line) =>
         ["OPTIONAL", "ALTERNATIVE"].includes(line.role)
       )) &&
-    pricedScope.filter(
-      (line) => line.role === "PRIMARY" && samePosition(basis, line)
-    ).length <= 1;
+    (() => {
+      const directPrimaryLines = pricedScope.filter(
+        (line) => line.role === "PRIMARY" && samePosition(basis, line)
+      );
+      return (
+        directPrimaryLines.length <= 1 ||
+        directPrimaryLines.every(
+          (line) => line.groupId === directPrimaryLines[0]?.groupId
+        )
+      );
+    })();
   const basisEvidenceComplete =
     basis.quantity !== null &&
     basis.unit !== null &&
     !hasUnresolvedBasisReference(basis) &&
     basis.evidence.some((evidence) =>
       ["VERIFIED_NATIVE", "VERIFIED_VISUAL"].includes(evidence.status)
+    ) &&
+    materialRequirements.every((requirement) =>
+      requirement.evidence.some((evidence) =>
+        ["VERIFIED_NATIVE", "VERIFIED_VISUAL"].includes(evidence.status)
+      )
     );
   const evidenceSufficient =
     basisEvidenceComplete &&
@@ -599,9 +833,14 @@ export function matchConstraints(
   else if (basis.unit === null) reasons.push("Basis-Einheit fehlt; Einheitenvergleich nicht möglich");
   else reasons.push("Einheit ist nicht kompatibel oder nicht belegt");
   if (technicalCompatible && basis.technicalAttributes.length > 0) {
-    positiveReasons.push("Extrahierte technische Eigenschaften stimmen überein");
+    positiveReasons.push(
+      productIdentityConfirmed
+        ? "Identisches Fabrikat und Typ bestätigen die technische Produktidentität"
+        : "Extrahierte technische Eigenschaften stimmen überein"
+    );
   }
   reasons.push(...technicalDeviations);
+  reasons.push(...unresolvedTechnicalAttributes);
   reasons.push(...scopeDifferences);
   if (!optionalSeparated) reasons.push("Optionales Zubehör ist nicht getrennt");
   else if (offers.some((line) => ["OPTIONAL", "ALTERNATIVE"].includes(line.role))) {
@@ -641,7 +880,11 @@ export function matchConstraints(
     reasons,
     positiveReasons,
     technicalDeviations,
-    scopeDifferences
+    technicalComparisonStatus,
+    unresolvedTechnicalAttributes,
+    productIdentityConfirmed,
+    scopeDifferences,
+    missingMaterialComponents
   };
 }
 
@@ -684,7 +927,9 @@ function offerAvailability(
   const basisReference = parsePositionReference(basis.positionNumber);
   if (!basisReference) return "NOT_COVERED";
   const supplierReferences = supplierOffers
-    .map((offer) => parsePositionReference(offer.line.sourcePositionNumber))
+    .flatMap((offer) =>
+      offerPositionReferences(offer.line).map(parsePositionReference)
+    )
     .filter(
       (reference): reference is PositionReference =>
         reference !== null && reference.prefix === basisReference.prefix
@@ -698,29 +943,104 @@ function offerAvailability(
 }
 
 function optionStatus(option: Omit<SupplierOption, "status">): RecommendationStatus {
-  return recommendationStatus({
-    matchingConfirmed: option.matchingAccepted || option.matchingReliable,
-    priceValidated:
-      option.extractionValidated && option.pricedTotal !== null,
-    quantityCompatible: option.quantityCompatible,
-    unitCompatible: option.unitCompatible,
-    requiredScopeEquivalent: option.requiredScopeComplete,
-    mandatoryComponentsIncluded: option.missingComponents.length === 0,
-    technicalDeviation: !option.technicalCompatible,
-    optionalSeparated: option.optionalSeparated,
-    evidenceSufficient: option.evidenceSufficient,
-    offerAvailability: option.offerAvailability
-  });
+  const scopeStatus =
+    option.materialScopeStatus ??
+    materialScopeStatus({
+      availability: option.offerAvailability,
+      pricedTotal: option.pricedTotal,
+      quantityCompatible: option.quantityCompatible,
+      unitCompatible: option.unitCompatible,
+      technicalCompatible: option.technicalCompatible,
+      technicalComparisonStatus: option.technicalComparisonStatus,
+      requiredScopeComplete: option.requiredScopeComplete,
+      missingComponents: option.missingComponents,
+      optionalSeparated: option.optionalSeparated,
+      bundleCompatible: option.bundleCompatible ?? true,
+      evidenceSufficient: option.evidenceSufficient,
+      extractionValidated: option.extractionValidated,
+      matchingAccepted: option.matchingAccepted,
+      matchingReliable: option.matchingReliable
+    });
+  switch (scopeStatus) {
+    case "COMPLETE_MATERIAL_SCOPE":
+      return "CLEAR_RECOMMENDATION";
+    case "PARTIAL_MATERIAL_SCOPE":
+      return "DIFFERENT_SCOPE_OF_SUPPLY";
+    case "TECHNICALLY_DEVIATING":
+      return "TECHNICAL_DEVIATION";
+    case "EXPLICIT_NO_OFFER":
+      return "NO_OFFER";
+    case "NOT_COVERED":
+    case "UNKNOWN":
+      return "MATCHING_UNCLEAR";
+  }
+}
+
+function materialScopeStatus(input: {
+  availability: OfferAvailability;
+  pricedTotal: number | null;
+  quantityCompatible: boolean;
+  quantityKnown?: boolean;
+  unitCompatible: boolean;
+  unitKnown?: boolean;
+  technicalCompatible: boolean;
+  technicalComparisonStatus?: TechnicalComparisonStatus;
+  requiredScopeComplete: boolean;
+  missingComponents: readonly string[];
+  optionalSeparated: boolean;
+  bundleCompatible: boolean;
+  evidenceSufficient: boolean;
+  extractionValidated: boolean;
+  matchingAccepted: boolean;
+  matchingReliable: boolean;
+}): SupplierMaterialScopeStatus {
+  if (input.availability === "EXPLICIT_NO_OFFER") {
+    return "EXPLICIT_NO_OFFER";
+  }
+  if (input.availability === "NOT_COVERED") return "NOT_COVERED";
+  if (input.availability === "COVERED_WITHOUT_OFFER") return "UNKNOWN";
+  if (
+    input.technicalComparisonStatus === "CONFIRMED_DEVIATION" ||
+    (!input.technicalComparisonStatus && !input.technicalCompatible)
+  ) {
+    return "TECHNICALLY_DEVIATING";
+  }
+  if (
+    !input.requiredScopeComplete ||
+    input.missingComponents.length > 0 ||
+    (input.quantityKnown && !input.quantityCompatible) ||
+    (input.unitKnown && !input.unitCompatible)
+  ) {
+    return "PARTIAL_MATERIAL_SCOPE";
+  }
+  if (input.technicalComparisonStatus === "UNRESOLVED") return "UNKNOWN";
+  if (
+    input.pricedTotal === null ||
+    !input.quantityCompatible ||
+    !input.unitCompatible ||
+    !input.optionalSeparated ||
+    !input.bundleCompatible ||
+    !input.evidenceSufficient ||
+    !input.extractionValidated ||
+    (!input.matchingAccepted && !input.matchingReliable)
+  ) {
+    return "UNKNOWN";
+  }
+  return "COMPLETE_MATERIAL_SCOPE";
 }
 
 export function buildSupplierOptions(input: {
   basisPositions: BasisPosition[];
   offers: OfferLineContext[];
   links: MatchLink[];
+  fullyProcessedSupplierDocumentIds?: ReadonlySet<string>;
 }): SupplierOption[] {
+  const eligibleOffers = input.offers.filter(
+    (offer) => !isSubtotalOfferLine(offer.line)
+  );
   const suppliers = Array.from(
     new Map(
-      input.offers.map((offer) => [
+      eligibleOffers.map((offer) => [
         offer.documentId,
         { id: offer.documentId, label: offer.documentLabel }
       ])
@@ -728,7 +1048,7 @@ export function buildSupplierOptions(input: {
   );
   return input.basisPositions.flatMap((basis) =>
     suppliers.map((supplier) => {
-      const supplierOffers = input.offers.filter(
+      const supplierOffers = eligibleOffers.filter(
         (offer) => offer.documentId === supplier.id
       );
       const supplierLineIds = new Set(
@@ -742,18 +1062,35 @@ export function buildSupplierOptions(input: {
       const lineIds = Array.from(
         new Set(links.flatMap((link) => link.offerLineIds).filter((id) => supplierLineIds.has(id)))
       );
-      const contexts = input.offers.filter((offer) => lineIds.includes(offer.line.id));
+      const contexts = eligibleOffers.filter((offer) =>
+        lineIds.includes(offer.line.id)
+      );
       const lines = contexts.map((context) => context.line);
-      const availability = offerAvailability(basis, supplierOffers, lines);
+      const detectedAvailability = offerAvailability(
+        basis,
+        supplierOffers,
+        lines
+      );
+      const availability =
+        detectedAvailability === "NOT_COVERED" &&
+        input.fullyProcessedSupplierDocumentIds?.has(supplier.id)
+          ? "COVERED_WITHOUT_OFFER"
+          : detectedAvailability;
       const primary = lines.find(
         (line) => line.role === "PRIMARY" && samePosition(basis, line)
       );
       const mandatory = lines.filter(
         (line) =>
-          ["REQUIRED_COMPONENT", "INCLUDED_ACCESSORY"].includes(line.role) ||
+          [
+            "REQUIRED_COMPONENT",
+            "MANDATORY_COMPONENT",
+            "INCLUDED_ACCESSORY"
+          ].includes(line.role) ||
           (line.role === "PRIMARY" &&
             line.id !== primary?.id &&
-            !line.sourcePositionNumber)
+            (!offerPositionReferences(line).length ||
+              (samePosition(basis, line) &&
+                line.groupId === primary?.groupId)))
       );
       const optional = lines.filter((line) =>
         ["OPTIONAL", "ALTERNATIVE"].includes(line.role)
@@ -765,25 +1102,30 @@ export function buildSupplierOptions(input: {
       const optionalPrices = optional
         .map(printedTotal)
         .filter((value): value is number => value !== null);
-      const missingComponents: string[] = [];
-      if (
-        availability === "EXPLICIT_NO_OFFER" ||
-        availability === "COVERED_WITHOUT_OFFER"
-      ) {
-        missingComponents.push("NOT_OFFERED");
-      }
+      const constraints = matchConstraints(basis, lines);
+      const missingComponents: string[] =
+        availability === "PRESENT"
+          ? [...constraints.missingMaterialComponents]
+          : [];
       if (mandatory.some((line) => printedTotal(line) === null)) {
         missingComponents.push("Pflichtkomponente ohne bestätigten Gesamtpreis");
       }
-      const constraints = matchConstraints(basis, lines);
+      const mandatoryContexts = contexts.filter(
+        (context) =>
+          !["OPTIONAL", "ALTERNATIVE"].includes(context.line.role)
+      );
       const validationIssueIds = Array.from(
-        new Set(contexts.flatMap((context) => context.blockingIssueIds ?? []))
+        new Set(
+          mandatoryContexts.flatMap(
+            (context) => context.blockingIssueIds ?? []
+          )
+        )
       );
       const extractionValidated =
         availability === "PRESENT" &&
-        lines.length > 0 &&
+        mandatoryContexts.length > 0 &&
         validationIssueIds.length === 0 &&
-        lines.every((line) =>
+        mandatoryContexts.every(({ line }) =>
           ["MACHINE_VALIDATED", "HUMAN_CONFIRMED", "HUMAN_CORRECTED"].includes(
             line.verificationStatus
           )
@@ -818,25 +1160,45 @@ export function buildSupplierOptions(input: {
         availability === "PRESENT" ? constraints.requiredScopeComplete : true;
       const optionalSeparated =
         availability === "PRESENT" ? constraints.optionalSeparated : true;
+      const bundleCompatible =
+        availability === "PRESENT" ? constraints.bundleCompatible : true;
       const evidenceSufficient =
         availability === "PRESENT" ? constraints.evidenceSufficient : true;
+      const materialScope = materialScopeStatus({
+        availability,
+        pricedTotal,
+        quantityCompatible,
+        quantityKnown:
+          availability === "PRESENT" &&
+          basis.quantity !== null &&
+          primary?.quantity !== null &&
+          primary?.quantity !== undefined,
+        unitCompatible,
+        unitKnown:
+          availability === "PRESENT" &&
+          basis.unit !== null &&
+          primary?.unit !== null &&
+          primary?.unit !== undefined,
+        technicalCompatible,
+        technicalComparisonStatus: constraints.technicalComparisonStatus,
+        requiredScopeComplete,
+        missingComponents,
+        optionalSeparated,
+        bundleCompatible,
+        evidenceSufficient,
+        extractionValidated,
+        matchingAccepted,
+        matchingReliable
+      });
       const comparableTotal =
-        pricedTotal !== null &&
-        quantityCompatible &&
-        unitCompatible &&
-        technicalCompatible &&
-        requiredScopeComplete &&
-        optionalSeparated &&
-        evidenceSufficient
-          ? pricedTotal
-          : null;
+        materialScope === "COMPLETE_MATERIAL_SCOPE" ? pricedTotal : null;
       const reasons = Array.from(
         new Set([
           ...(availability === "EXPLICIT_NO_OFFER"
             ? ["Keine Lieferantenleistung; explizit als bauseits/nicht angeboten belegt"]
             : []),
           ...(availability === "COVERED_WITHOUT_OFFER"
-            ? ["Keine passende Angebotsposition im belegten Positionsintervall gefunden"]
+            ? ["Verarbeiteter Supplier-Bereich enthält keine passende Position; ohne expliziten No-Offer-Beleg bleibt die Materialabdeckung unklar"]
             : []),
           ...(availability === "NOT_COVERED"
             ? ["Keine passende Angebotsposition gefunden; extrahierter Supplier-Bereich deckt die Basis-Position nicht ab"]
@@ -855,8 +1217,11 @@ export function buildSupplierOptions(input: {
               : []),
           ...(comparableTotal === null &&
           pricedTotal !== null &&
-          !requiredScopeComplete
-            ? ["Materialsumme vorhanden, aber wegen abweichendem Pflichtumfang nicht als vergleichbarer Gesamtpreis freigegeben"]
+          materialScope === "PARTIAL_MATERIAL_SCOPE"
+            ? ["Preis gefunden, aber wegen unvollständigem Material-Lieferumfang nicht als Vergleichspreis freigegeben"]
+            : []),
+          ...(materialScope === "COMPLETE_MATERIAL_SCOPE"
+            ? ["Vollständig vergleichbarer Material-Lieferumfang"]
             : []),
           ...(matchingAccepted
             ? ["Zuordnung manuell bestätigt"]
@@ -865,9 +1230,9 @@ export function buildSupplierOptions(input: {
               : availability === "PRESENT"
                 ? ["Zuordnung nicht eindeutig bestätigt"]
                 : []),
-          ...missingComponents
-            .filter((component) => component !== "NOT_OFFERED")
-            .map((component) => `Pflichtkomponente fehlt: ${component}`)
+          ...missingComponents.map(
+            (component) => `Fehlender Pflichtbestandteil: ${component}`
+          )
         ])
       );
       const withoutStatus: Omit<SupplierOption, "status"> = {
@@ -897,13 +1262,23 @@ export function buildSupplierOptions(input: {
         quantityCompatible,
         unitCompatible,
         technicalCompatible,
+        technicalComparisonStatus:
+          availability === "PRESENT"
+            ? constraints.technicalComparisonStatus
+            : "CONFIRMED_COMPATIBLE",
+        unresolvedTechnicalAttributes:
+          availability === "PRESENT"
+            ? constraints.unresolvedTechnicalAttributes
+            : [],
         requiredScopeComplete,
         optionalSeparated,
+        bundleCompatible,
         evidenceSufficient,
         extractionValidated,
         matchingAccepted,
         matchingReliable,
         offerAvailability: availability,
+        materialScopeStatus: materialScope,
         reasons
       };
       return { ...withoutStatus, status: optionStatus(withoutStatus) };

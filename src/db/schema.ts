@@ -15,6 +15,9 @@ import {
 export const documentType = pgEnum("document_type", [
   "BASIS_LV",
   "SUPPLIER_OFFER",
+  "SPECIALIZED_SUPPLIER_OFFER",
+  "FINAL_INTERNAL_CALCULATION",
+  "FINAL_CUSTOMER_OFFER",
   "FINAL_DECISION",
   "HISTORICAL_CALCULATION",
   "MANUFACTURER_CALCULATION",
@@ -314,18 +317,159 @@ export const supplierRecommendations = pgTable("supplier_recommendations", {
   generatedAt: timestamp("generated_at", { withTimezone: true }).notNull().defaultNow()
 });
 
-export const supplierDecisions = pgTable("supplier_decisions", {
+export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
-  recommendationId: uuid("recommendation_id")
-    .notNull()
-    .references(() => supplierRecommendations.id, { onDelete: "cascade" }),
-  selectedSupplierId: text("selected_supplier_id"),
-  status: text("status").notNull(),
-  operator: text("operator").notNull(),
-  reason: text("reason").notNull(),
-  comment: text("comment"),
-  decidedAt: timestamp("decided_at", { withTimezone: true }).notNull().defaultNow()
+  displayName: text("display_name").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow()
 });
+
+export const userSessions = pgTable(
+  "user_sessions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull()
+  },
+  (table) => [uniqueIndex("user_sessions_token_hash_idx").on(table.tokenHash)]
+);
+
+export const decisionDrafts = pgTable(
+  "decision_drafts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: text("project_id").notNull(),
+    positionId: text("position_id").notNull(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id),
+    selectedSupplierOptionId: text("selected_supplier_option_id"),
+    selectedBundleLineIds: jsonb("selected_bundle_line_ids").notNull().default([]),
+    rejectedOptionIds: jsonb("rejected_option_ids").notNull().default([]),
+    reasonCodes: jsonb("reason_codes").notNull().default([]),
+    outcome: text("outcome"),
+    comment: text("comment").notNull().default(""),
+    analysisVersionId: text("analysis_version_id").notNull(),
+    version: integer("version").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedBy: uuid("updated_by")
+      .notNull()
+      .references(() => users.id),
+    deviceSessionId: text("device_session_id").notNull()
+  },
+  (table) => [
+    uniqueIndex("decision_drafts_project_position_idx").on(
+      table.projectId,
+      table.positionId
+    )
+  ]
+);
+
+export const supplierDecisions = pgTable(
+  "supplier_decisions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    recommendationId: uuid("recommendation_id").references(
+      () => supplierRecommendations.id,
+      { onDelete: "cascade" }
+    ),
+    projectId: text("project_id").notNull(),
+    positionId: text("position_id").notNull(),
+    selectedSupplierId: text("selected_supplier_id"),
+    selectedSupplierOptionId: text("selected_supplier_option_id"),
+    selectedSupplierLineIds: jsonb("selected_supplier_line_ids").notNull().default([]),
+    selectedBundleLineIds: jsonb("selected_bundle_line_ids").notNull().default([]),
+    rejectedOptionIds: jsonb("rejected_option_ids").notNull().default([]),
+    status: text("status").notNull(),
+    outcome: text("outcome").notNull(),
+    operator: text("operator").notNull(),
+    reason: text("reason").notNull(),
+    reasonCodes: jsonb("reason_codes").notNull().default([]),
+    comment: text("comment").notNull(),
+    evidenceSnapshot: jsonb("evidence_snapshot").notNull(),
+    contextSnapshot: jsonb("context_snapshot").notNull(),
+    documentRevisionIds: jsonb("document_revision_ids").notNull().default([]),
+    decidedBy: text("decided_by").notNull(),
+    decidedAt: timestamp("decided_at", { withTimezone: true }).notNull().defaultNow(),
+    catalogVersion: text("catalog_version"),
+    previousDecisionId: uuid("previous_decision_id"),
+    analysisVersionId: text("analysis_version_id").notNull(),
+    decisionVersion: integer("decision_version").notNull(),
+    decisionType: text("decision_type"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    uniqueIndex("supplier_decisions_project_position_version_idx").on(
+      table.projectId,
+      table.positionId,
+      table.decisionVersion
+    )
+  ]
+);
+
+export const decisionEvents = pgTable("decision_events", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  projectId: text("project_id").notNull(),
+  positionId: text("position_id").notNull(),
+  decisionId: uuid("decision_id").references(() => supplierDecisions.id),
+  draftId: uuid("draft_id"),
+  eventType: text("event_type").notNull(),
+  actorId: uuid("actor_id")
+    .notNull()
+    .references(() => users.id),
+  timestamp: timestamp("timestamp", { withTimezone: true }).notNull().defaultNow(),
+  metadata: jsonb("metadata").notNull().default({})
+});
+
+export const projectWorkspaces = pgTable(
+  "project_workspaces",
+  {
+    projectId: text("project_id").notNull(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    state: jsonb("state").notNull().default({}),
+    version: integer("version").notNull().default(1),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedBy: uuid("updated_by")
+      .notNull()
+      .references(() => users.id)
+  },
+  (table) => [
+    primaryKey({ columns: [table.projectId, table.userId] })
+  ]
+);
+
+export const supplierDecisionReviewActions = pgTable(
+  "supplier_decision_review_actions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    supplierDecisionId: uuid("supplier_decision_id")
+      .notNull()
+      .references(() => supplierDecisions.id, { onDelete: "cascade" }),
+    basisPositionId: uuid("basis_position_id")
+      .notNull()
+      .references(() => basisPositions.id, { onDelete: "cascade" }),
+    action: text("action").notNull(),
+    previousDecisionId: uuid("previous_decision_id"),
+    operator: text("operator").notNull(),
+    comment: text("comment").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    uniqueIndex("supplier_decision_review_action_decision_idx").on(
+      table.supplierDecisionId
+    )
+  ]
+);
 
 export const auditEvents = pgTable("audit_events", {
   id: uuid("id").primaryKey().defaultRandom(),

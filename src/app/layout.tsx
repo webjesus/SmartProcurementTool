@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import { AppShell } from "@/components/app-shell";
+import { DecisionIdentityProvider } from "@/components/decision-identity";
+import { decisionPersistenceMode } from "@/services/decision-persistence-config";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -15,10 +17,15 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  const devUiEnabled = process.env.DEV_UI_ENABLED === "true";
+  const centralDecisionsEnabled =
+    decisionPersistenceMode() === "CENTRAL_SERVER";
   return (
     <html lang="de">
       <body>
-        <AppShell>{children}</AppShell>
+        <DecisionIdentityProvider enabled={centralDecisionsEnabled}>
+          <AppShell devUiEnabled={devUiEnabled}>{children}</AppShell>
+        </DecisionIdentityProvider>
       </body>
     </html>
   );

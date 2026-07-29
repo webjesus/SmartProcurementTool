@@ -24,6 +24,11 @@ import {
   proposeMatches,
   type OfferLineContext
 } from "../src/domain/matching";
+import { buildBasisScopeProfiles } from "../src/domain/basis-scope";
+import {
+  linkBasisPositionContinuations,
+  routeExtractionPage
+} from "../src/pdf/deterministic-extraction";
 import {
   canonicalizeExtractionEvidence,
   canMachineValidate,
@@ -59,10 +64,38 @@ const recheck = args.has("--recheck");
 const nativeTextOnly = args.has("--native-text-only");
 const includeDocumentMetadata = !args.has("--no-metadata");
 const analyze = args.has("--analyze");
+const mergeExistingAnalysis = args.has("--merge-existing-analysis");
 const documentSelector = args.get("--document");
 const pageSelector = Number(args.get("--page") ?? 0);
+const pagesSelector = args.get("--pages");
+const costAllowanceUsd = Number(args.get("--cost-allowance-usd") ?? Number.NaN);
 const requestedLimit = Number(args.get("--limit") ?? process.env.SPT_MAX_PAGES_PER_RUN ?? 3);
 const limit = Math.min(Math.max(requestedLimit, 1), 3);
+
+function parsePageSelection(value?: string): Set<number> | null {
+  if (!value) return null;
+  const selected = new Set<number>();
+  for (const segment of value.split(",").map((item) => item.trim())) {
+    if (!segment) continue;
+    const range = segment.match(/^(\d+)-(\d+)$/);
+    if (range) {
+      const from = Number(range[1]);
+      const to = Number(range[2]);
+      if (from > to) throw new Error(`Invalid page range: ${segment}`);
+      for (let page = from; page <= to; page += 1) selected.add(page);
+      continue;
+    }
+    const page = Number(segment);
+    if (!Number.isInteger(page) || page < 1) {
+      throw new Error(`Invalid page selector: ${segment}`);
+    }
+    selected.add(page);
+  }
+  if (selected.size > 3) {
+    throw new Error("--pages may contain at most 3 pages per resumable batch.");
+  }
+  return selected;
+}
 
 function comparePosition(left: string, right: string): number {
   const a = left.split(".").map(Number);
@@ -105,7 +138,9 @@ async function buildPersistedAnalysis(root: string): Promise<void> {
         isMatchingSourceDocumentType(run.document.documentType) &&
         run.document.documentType === "SUPPLIER_OFFER" &&
         supplierSelectors.includes(run.document.id) &&
-        run.result.metadata.promptVersion === PROMPT_VERSION
+        (run.result.metadata.promptVersion === PROMPT_VERSION ||
+          run.provenance?.extractionMethod ===
+            "DETERMINISTIC_TEXT_LAYER")
     )
     .sort(
       (left, right) =>
@@ -113,7 +148,7 @@ async function buildPersistedAnalysis(root: string): Promise<void> {
           supplierSelectors.indexOf(right.document.id) ||
         left.document.pageNumber - right.document.pageNumber
     );
-  const basisPositions = Array.from(
+  const selectedBasisPositions = Array.from(
     new Map(
       basisRuns
         .flatMap((run) => run.result.envelope.extraction.basisPositions)
@@ -129,6 +164,64 @@ async function buildPersistedAnalysis(root: string): Promise<void> {
         .map((position) => [position.positionNumber, position])
     ).values()
   );
+  const continuationPageNumbers = Array.from(
+    new Set(
+      selectedBasisPositions
+        .filter(
+          (position) =>
+            position.quantity === null || position.unit === null
+        )
+        .flatMap((position) =>
+          position.evidence
+            .filter(
+              (item) =>
+                item.region.y + item.region.height >= 0.75
+            )
+            .map((item) => item.pageNumber + 1)
+        )
+    )
+  );
+  const manifest = JSON.parse(
+    await readFile(
+      path.resolve(root, ".data", "corpus-manifest.local.json"),
+      "utf8"
+    )
+  ) as Manifest;
+  const basisManifest = manifest.documents.find(
+    (document) => document.id === basisSelector
+  );
+  const continuationPages =
+    basisManifest && continuationPageNumbers.length > 0
+      ? await (async () => {
+          const parser = new PdfJsDocumentParser();
+          const file = new Uint8Array(
+            await readFile(
+              path.resolve(
+                root,
+                process.env.CORPUS_DIR ?? "pdffirma",
+                basisManifest.relativePath
+              )
+            )
+          );
+          return Promise.all(
+            continuationPageNumbers.map((pageNumber) =>
+              parser.extractPage(basisSelector, file, pageNumber)
+            )
+          );
+        })()
+      : [];
+  const normalizedBasisPositions = linkBasisPositionContinuations({
+    positions: selectedBasisPositions,
+    continuationPages
+  });
+  const basisPositions = buildBasisScopeProfiles({
+    positions: normalizedBasisPositions,
+    pages: basisRuns.map((run) => ({
+      pageNumber: run.document.pageNumber,
+      positions: run.result.envelope.extraction.basisPositions,
+      sections: run.result.envelope.extraction.sections
+    }))
+  });
   if (basisPositions.length === 0 || basisPositions.length > 20) {
     throw new Error(
       `Selected Basis range produced ${basisPositions.length} positions; expected 1..20.`
@@ -179,7 +272,7 @@ async function buildPersistedAnalysis(root: string): Promise<void> {
     };
   });
   const generatedAt = new Date().toISOString();
-  const analysis: PilotAnalysis = {
+  const partialAnalysis: PilotAnalysis = {
     id: `analysis_${createHash("sha256")
       .update(
         JSON.stringify({
@@ -194,9 +287,12 @@ async function buildPersistedAnalysis(root: string): Promise<void> {
       .slice(0, 18)}`,
     basisDocumentId: basisSelector,
     basisDocumentLabel: basisDocument.relativePath,
-    basisPages: Array.from(new Set(basisRuns.map((run) => run.document.pageNumber))).sort(
-      (left, right) => left - right
-    ),
+    basisPages: Array.from(
+      new Set([
+        ...basisRuns.map((run) => run.document.pageNumber),
+        ...continuationPages.map((page) => page.pageNumber)
+      ])
+    ).sort((left, right) => left - right),
     basisPositionFrom: basisFrom,
     basisPositionTo: basisTo,
     supplierDocuments,
@@ -206,6 +302,55 @@ async function buildPersistedAnalysis(root: string): Promise<void> {
     recommendations: buildBasisRecommendations(basisPositions, supplierOptions),
     generatedAt
   };
+  const analysis: PilotAnalysis =
+    mergeExistingAnalysis && state.analysis
+      ? (() => {
+          const affected = new Set(basisPositions.map((position) => position.id));
+          const replaceAffected = <T>(
+            existing: T[],
+            replacement: T[],
+            ids: (value: T) => readonly string[]
+          ) => [
+            ...existing.filter(
+              (value) => !ids(value).some((id) => affected.has(id))
+            ),
+            ...replacement
+          ];
+          return {
+            ...partialAnalysis,
+            basisPages: Array.from(
+              new Set([
+                ...state.analysis!.basisPages,
+                ...partialAnalysis.basisPages
+              ])
+            ).sort((left, right) => left - right),
+            basisPositionFrom: state.analysis!.basisPositionFrom,
+            basisPositionTo: state.analysis!.basisPositionTo,
+            basisPositions: replaceAffected(
+              state.analysis!.basisPositions,
+              partialAnalysis.basisPositions,
+              (position) => [position.id]
+            ).sort((left, right) =>
+              comparePosition(left.positionNumber, right.positionNumber)
+            ),
+            matchLinks: replaceAffected(
+              state.analysis!.matchLinks,
+              partialAnalysis.matchLinks,
+              (link) => link.basisPositionIds
+            ),
+            supplierOptions: replaceAffected(
+              state.analysis!.supplierOptions,
+              partialAnalysis.supplierOptions,
+              (option) => option.basisPositionIds
+            ),
+            recommendations: replaceAffected(
+              state.analysis!.recommendations,
+              partialAnalysis.recommendations,
+              (recommendation) => [recommendation.basisPositionId]
+            )
+          };
+        })()
+      : partialAnalysis;
   await persistence.saveAnalysis(analysis);
   const statuses = analysis.recommendations.reduce<Record<string, number>>(
     (counts, recommendation) => {
@@ -434,12 +579,86 @@ async function main() {
     throw new Error("Select one document with --document=<id-or-name> before using OpenAI.");
   }
 
+  const selectedPages = parsePageSelection(pagesSelector);
+  if (selectedPages && pageSelector > 0) {
+    throw new Error("Use either --page or --pages, not both.");
+  }
   const pages = eligible
     .flatMap((document) => document.pages.map((page) => ({ document, page })))
-    .filter(({ page }) => pageSelector === 0 || page.pageNumber === pageSelector)
+    .filter(
+      ({ page }) =>
+        (pageSelector === 0 || page.pageNumber === pageSelector) &&
+        (!selectedPages || selectedPages.has(page.pageNumber))
+    )
     .slice(0, limit);
+  const preflightPersistence = new LocalPilotPersistence(
+    path.resolve(root, ".data"),
+    true
+  );
+  const preflightState = await preflightPersistence.read();
+  const localEnv: Record<string, string> = await readLocalEnv().catch(
+    () => ({})
+  );
+  const extractionModel =
+    localEnv.OPENAI_EXTRACTION_MODEL ??
+    process.env.OPENAI_EXTRACTION_MODEL ??
+    "gpt-5.6-sol";
+  const cachedPages = pages.filter(({ document, page }) =>
+    preflightState.runs.some(
+      (run) =>
+        run.document.id === document.id &&
+        run.document.pageNumber === page.pageNumber &&
+        ((run.result.metadata.modelId === extractionModel &&
+          run.result.metadata.promptVersion ===
+            (document.documentType === "BASIS_LV"
+              ? BASIS_PROMPT_VERSION
+              : PROMPT_VERSION)) ||
+          (run.provenance?.extractionMethod ===
+            "DETERMINISTIC_TEXT_LAYER" &&
+            run.provenance.validationStatus === "COMPLETED"))
+    )
+  );
+  const expectedCalls = recheck
+    ? cachedPages.length
+    : pages.length - cachedPages.length;
+  const comparableRuns = preflightState.runs.filter((run) =>
+    pages.some(
+      ({ document }) =>
+        (document.documentType === "BASIS_LV") ===
+        (run.document.documentType === "BASIS_LV")
+    )
+  );
+  const average = (values: Array<number | null | undefined>, fallback: number) => {
+    const present = values.filter(
+      (value): value is number =>
+        typeof value === "number" && Number.isFinite(value) && value > 0
+    );
+    return present.length
+      ? present.reduce((sum, value) => sum + value, 0) / present.length
+      : fallback;
+  };
+  const estimatedInputTokens = Math.ceil(
+    average(
+      comparableRuns.map((run) => run.result.metadata.inputTokens),
+      10_000
+    ) * expectedCalls
+  );
+  const estimatedOutputTokens = Math.ceil(
+    average(
+      comparableRuns.map((run) => run.result.metadata.outputTokens),
+      3_000
+    ) * expectedCalls
+  );
+  const estimatedCostUsd =
+    average(
+      comparableRuns.map((run) => run.result.metadata.estimatedCostUsd),
+      0.15
+    ) * expectedCalls;
   process.stdout.write(
     `${dryRun ? "DRY RUN" : recheck ? "RECHECK" : "PROCESS"}: ${eligible.length} document(s), ${pages.length} page(s), hard page limit ${limit}.\n`
+  );
+  process.stdout.write(
+    `PREFLIGHT: pages ${pages.map(({ page }) => page.pageNumber).join(",") || "none"}; cached pages ${cachedPages.map(({ page }) => page.pageNumber).join(",") || "none"}; expected calls ${expectedCalls}; estimated input tokens ${estimatedInputTokens}; estimated output tokens ${estimatedOutputTokens}; estimated cost $${estimatedCostUsd.toFixed(4)}; cost allowance ${Number.isFinite(costAllowanceUsd) ? `$${costAllowanceUsd.toFixed(4)}` : "NOT PROVIDED"}.\n`
   );
   process.stdout.write("Historical result documents excluded; supplier extraction receives no Basis data.\n");
   if (dryRun) {
@@ -461,14 +680,18 @@ async function main() {
                 parsed.textItems.map((item) => ({
                   id: item.id,
                   text: item.rawText,
-                  order: item.order,
-                  region: item.region
+                  region: [
+                    Math.round(item.region.x * 10_000) / 10_000,
+                    Math.round(item.region.y * 10_000) / 10_000,
+                    Math.round(item.region.width * 10_000) / 10_000,
+                    Math.round(item.region.height * 10_000) / 10_000
+                  ]
                 }))
               ),
               "utf8"
             );
       process.stdout.write(
-        `PLAN: model ${process.env.OPENAI_EXTRACTION_MODEL ?? "OPENAI_EXTRACTION_MODEL"}; document ${document.relativePath}; page ${page.pageNumber}; ${requestMode(page.mode, nativeTextOnly)}; metadata ${includeDocumentMetadata ? "included" : "omitted"}; estimated ${textBytes + (image?.byteLength ?? 0)} bytes (${parsed.textItems.length} text items, ${image?.byteLength ?? 0} image bytes).\n`
+        `PLAN: model ${extractionModel}; document ${document.relativePath}; page ${page.pageNumber}; ${requestMode(page.mode, nativeTextOnly)}; metadata ${includeDocumentMetadata ? "included" : "omitted"}; estimated ${textBytes + (image?.byteLength ?? 0)} bytes (${parsed.textItems.length} text items, ${image?.byteLength ?? 0} image bytes).\n`
       );
     }
     process.stdout.write("OpenAI used: no. No commercial text or image left this device.\n");
@@ -478,7 +701,6 @@ async function main() {
     throw new Error("Set LOCAL_CORPUS_ENABLED=true for this local process.");
   }
 
-  const localEnv = await readLocalEnv();
   if (!localEnv.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is required in .env.local.");
   process.env.OPENAI_API_KEY = localEnv.OPENAI_API_KEY;
   process.env.OPENAI_EXTRACTION_MODEL =
@@ -488,6 +710,15 @@ async function main() {
   if (!process.env.OPENAI_EXTRACTION_MODEL || !process.env.OPENAI_RECHECK_MODEL) {
     throw new Error(
       "Add OPENAI_EXTRACTION_MODEL=gpt-5.6-sol and OPENAI_RECHECK_MODEL=gpt-5.6-sol to .env.local, or pass both variables to this process."
+    );
+  }
+  if (
+    expectedCalls > 0 &&
+    (!Number.isFinite(costAllowanceUsd) ||
+      costAllowanceUsd < estimatedCostUsd)
+  ) {
+    throw new Error(
+      `New AI batch requires --cost-allowance-usd at or above the estimated $${estimatedCostUsd.toFixed(4)}.`
     );
   }
 
@@ -518,16 +749,29 @@ async function main() {
       (run) =>
         run.document.id === document.id &&
         run.document.pageNumber === page.pageNumber &&
-        run.result.metadata.modelId === process.env.OPENAI_EXTRACTION_MODEL &&
-        run.result.metadata.promptVersion ===
-          (document.documentType === "BASIS_LV"
-            ? BASIS_PROMPT_VERSION
-            : PROMPT_VERSION)
+        ((run.result.metadata.modelId ===
+          process.env.OPENAI_EXTRACTION_MODEL &&
+          run.result.metadata.promptVersion ===
+            (document.documentType === "BASIS_LV"
+              ? BASIS_PROMPT_VERSION
+              : PROMPT_VERSION)) ||
+          (run.provenance?.extractionMethod ===
+            "DETERMINISTIC_TEXT_LAYER" &&
+            run.provenance.validationStatus === "COMPLETED"))
     );
     if (existing) {
       cacheHits += 1;
       process.stdout.write(`cache hit: ${document.id} page ${page.pageNumber}, run ${existing.id}\n`);
       if (recheck) {
+        if (
+          existing.provenance?.extractionMethod ===
+          "DETERMINISTIC_TEXT_LAYER"
+        ) {
+          process.stdout.write(
+            "deterministic run: automatic semantic AI recheck is disabled; inspect explicit fallback candidates instead.\n"
+          );
+          continue;
+        }
         const recheckMetadata = await runRecheck(
           adapter,
           persistence,
@@ -544,6 +788,15 @@ async function main() {
     if (recheck) {
       throw new Error("Run the initial extraction before --recheck.");
     }
+    if (
+      document.documentType === "SUPPLIER_OFFER" &&
+      routeExtractionPage(parsed).primary ===
+        "DETERMINISTIC_TEXT_LAYER"
+    ) {
+      throw new Error(
+        `Deterministic-first gate: run npm run corpus:deterministic -- --document=${document.id} --page=${page.pageNumber}. No OpenAI fallback was sent.`
+      );
+    }
 
     let requestImage: Uint8Array | undefined;
     if (page.mode !== "DIGITAL" && !(page.mode === "HYBRID" && nativeTextOnly)) {
@@ -557,8 +810,12 @@ async function main() {
               parsed.textItems.map((item) => ({
                 id: item.id,
                 text: item.rawText,
-                order: item.order,
-                region: item.region
+                region: [
+                  Math.round(item.region.x * 10_000) / 10_000,
+                  Math.round(item.region.y * 10_000) / 10_000,
+                  Math.round(item.region.width * 10_000) / 10_000,
+                  Math.round(item.region.height * 10_000) / 10_000
+                ]
               }))
             ),
             "utf8"

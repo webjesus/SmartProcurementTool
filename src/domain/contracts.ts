@@ -3,6 +3,9 @@ import { z } from "zod";
 export const DocumentTypeSchema = z.enum([
   "BASIS_LV",
   "SUPPLIER_OFFER",
+  "SPECIALIZED_SUPPLIER_OFFER",
+  "FINAL_INTERNAL_CALCULATION",
+  "FINAL_CUSTOMER_OFFER",
   "FINAL_DECISION",
   "HISTORICAL_CALCULATION",
   "MANUFACTURER_CALCULATION",
@@ -20,6 +23,7 @@ export type PageMode = z.infer<typeof PageModeSchema>;
 export const OfferLineRoleSchema = z.enum([
   "PRIMARY",
   "REQUIRED_COMPONENT",
+  "MANDATORY_COMPONENT",
   "OPTIONAL",
   "ALTERNATIVE",
   "INCLUDED_ACCESSORY",
@@ -76,7 +80,8 @@ export const IssueCodeSchema = z.enum([
   "TECHNICAL_DEVIATION",
   "PROJECT_CONTEXT_CONFLICT",
   "DOCUMENT_TYPE_UNCLEAR",
-  "UNMATCHED_OFFER_LINE"
+  "UNMATCHED_OFFER_LINE",
+  "AI_FALLBACK_CANDIDATE"
 ]);
 export type IssueCode = z.infer<typeof IssueCodeSchema>;
 
@@ -175,6 +180,39 @@ export const ExtractedSectionSchema = z.object({
   kind: z.enum(["HEADING", "TABLE", "OFFER_GROUP", "BASIS_GROUP", "NOTE", "UNKNOWN"]),
   evidence: z.array(EvidenceReferenceSchema)
 });
+export type ExtractedSection = z.infer<typeof ExtractedSectionSchema>;
+
+export const BasisScopeRequirementCategorySchema = z.enum([
+  "MATERIAL",
+  "INSTALLATION",
+  "EXECUTION"
+]);
+export type BasisScopeRequirementCategory = z.infer<
+  typeof BasisScopeRequirementCategorySchema
+>;
+
+export const BasisScopeRequirementSchema = z.object({
+  code: z.string(),
+  label: z.string(),
+  category: BasisScopeRequirementCategorySchema,
+  inherited: z.boolean(),
+  evidence: z.array(EvidenceReferenceSchema)
+});
+export type BasisScopeRequirement = z.infer<
+  typeof BasisScopeRequirementSchema
+>;
+
+export const BasisScopeProfileSchema = z.object({
+  directLeafDescription: z.string(),
+  directLeafEvidence: z.array(EvidenceReferenceSchema),
+  inheritedExecutionDescription: z.array(z.string()),
+  inheritedMaterialRequirements: z.array(BasisScopeRequirementSchema),
+  inheritedInstallationRequirements: z.array(BasisScopeRequirementSchema),
+  fullLvExecutionScope: z.array(BasisScopeRequirementSchema),
+  procurementMaterialScope: z.array(BasisScopeRequirementSchema),
+  referenceResolved: z.boolean()
+});
+export type BasisScopeProfile = z.infer<typeof BasisScopeProfileSchema>;
 
 export const BasisPositionSchema = z.object({
   id: z.string(),
@@ -197,6 +235,9 @@ export const BasisPositionSchema = z.object({
   alternative: z.boolean(),
   heading: z.boolean(),
   evidence: z.array(EvidenceReferenceSchema),
+  hierarchyPath: z.array(z.string()).optional(),
+  continuationEvidence: z.array(EvidenceReferenceSchema).optional(),
+  scopeProfile: BasisScopeProfileSchema.optional(),
   verificationStatus: VerificationStatusSchema.optional()
 });
 export type BasisPosition = z.infer<typeof BasisPositionSchema>;
@@ -365,6 +406,27 @@ export const OfferAvailabilitySchema = z.enum([
 ]);
 export type OfferAvailability = z.infer<typeof OfferAvailabilitySchema>;
 
+export const SupplierMaterialScopeStatusSchema = z.enum([
+  "COMPLETE_MATERIAL_SCOPE",
+  "PARTIAL_MATERIAL_SCOPE",
+  "TECHNICALLY_DEVIATING",
+  "EXPLICIT_NO_OFFER",
+  "NOT_COVERED",
+  "UNKNOWN"
+]);
+export type SupplierMaterialScopeStatus = z.infer<
+  typeof SupplierMaterialScopeStatusSchema
+>;
+
+export const TechnicalComparisonStatusSchema = z.enum([
+  "CONFIRMED_COMPATIBLE",
+  "CONFIRMED_DEVIATION",
+  "UNRESOLVED"
+]);
+export type TechnicalComparisonStatus = z.infer<
+  typeof TechnicalComparisonStatusSchema
+>;
+
 export const SupplierOptionSchema = z.object({
   id: z.string(),
   basisPositionIds: z.array(z.string()).min(1),
@@ -387,13 +449,17 @@ export const SupplierOptionSchema = z.object({
   quantityCompatible: z.boolean(),
   unitCompatible: z.boolean(),
   technicalCompatible: z.boolean(),
+  technicalComparisonStatus: TechnicalComparisonStatusSchema.optional(),
+  unresolvedTechnicalAttributes: z.array(z.string()).optional(),
   requiredScopeComplete: z.boolean(),
   optionalSeparated: z.boolean(),
+  bundleCompatible: z.boolean(),
   evidenceSufficient: z.boolean(),
   extractionValidated: z.boolean(),
   matchingAccepted: z.boolean(),
   matchingReliable: z.boolean(),
   offerAvailability: OfferAvailabilitySchema,
+  materialScopeStatus: SupplierMaterialScopeStatusSchema,
   reasons: z.array(z.string()),
   status: RecommendationStatusSchema
 });
@@ -408,7 +474,64 @@ export const BasisRecommendationSchema = z.object({
 });
 export type BasisRecommendation = z.infer<typeof BasisRecommendationSchema>;
 
-export const SupplierDecisionSchema = z.object({
+export const DecisionEvidenceSourceSchema = z.object({
+  evidenceId: z.string(),
+  documentId: z.string(),
+  documentRevisionId: z.string(),
+  pageNumber: z.number().int().positive(),
+  region: NormalizedRegionSchema,
+  assetKey: z.string()
+}).strict();
+export type DecisionEvidenceSource = z.infer<typeof DecisionEvidenceSourceSchema>;
+
+export const DecisionLineSnapshotSchema = z.object({
+  lineId: z.string(),
+  role: OfferLineRoleSchema,
+  description: z.string(),
+  manufacturer: z.string().nullable(),
+  articleNumber: z.string().nullable(),
+  quantity: z.number().nullable(),
+  unit: z.string().nullable(),
+  continuation: z.boolean(),
+  sources: z.array(DecisionEvidenceSourceSchema)
+}).strict();
+
+export const DecisionBasisSnapshotSchema = z.object({
+  id: z.string(),
+  positionNumber: z.string(),
+  description: z.string(),
+  quantity: z.number().nullable(),
+  unit: z.string().nullable(),
+  sources: z.array(DecisionEvidenceSourceSchema)
+}).strict();
+
+export const DecisionOptionSnapshotSchema = z.object({
+  optionId: z.string(),
+  supplierDocumentId: z.string(),
+  supplierLabel: z.string(),
+  comparableTotal: z.number().nullable(),
+  status: RecommendationStatusSchema,
+  reasons: z.array(z.string()),
+  lines: z.array(DecisionLineSnapshotSchema)
+}).strict();
+
+export const DecisionEvidenceSnapshotSchema = z.object({
+  capturedAt: z.string().datetime(),
+  basisPosition: DecisionBasisSnapshotSchema,
+  basisContext: z.array(DecisionBasisSnapshotSchema),
+  supplierOptionId: z.string().nullable(),
+  supplierDocumentId: z.string().nullable(),
+  selectedLines: z.array(DecisionLineSnapshotSchema),
+  visibleSupplierOptions: z.array(DecisionOptionSnapshotSchema).optional(),
+  supplierContextLines: z.array(DecisionLineSnapshotSchema),
+  includedRequiredComponents: z.array(DecisionLineSnapshotSchema),
+  excludedOptionalComponents: z.array(DecisionLineSnapshotSchema),
+  continuationPages: z.array(DecisionEvidenceSourceSchema),
+  documentRevisionIds: z.array(z.string())
+}).strict();
+export type DecisionEvidenceSnapshot = z.infer<typeof DecisionEvidenceSnapshotSchema>;
+
+export const LegacySupplierDecisionSchema = z.object({
   id: z.string(),
   basisPositionId: z.string(),
   supplierDocumentId: z.string().nullable(),
@@ -416,8 +539,76 @@ export const SupplierDecisionSchema = z.object({
   comment: z.string(),
   operator: z.string(),
   timestamp: z.string().datetime()
+}).strict();
+
+export const SupplierDecisionV2Schema = z.object({
+  id: z.string(),
+  basisPositionId: z.string(),
+  supplierDocumentId: z.string().nullable(),
+  status: z.enum([
+    "SELECTED",
+    "DEFERRED",
+    "NONE_CORRECT",
+    "ADDITIONAL_CHECK_REQUESTED"
+  ]),
+  selectedSupplierOptionId: z.string().nullable(),
+  selectedSupplierLineIds: z.array(z.string()),
+  reasonCodes: z.array(z.string()),
+  comment: z.string(),
+  evidenceSnapshot: DecisionEvidenceSnapshotSchema.nullable(),
+  documentRevisionIds: z.array(z.string()),
+  decidedBy: z.string(),
+  decidedAt: z.string().datetime(),
+  catalogVersion: z.string(),
+  previousDecisionId: z.string().nullable(),
+  decisionType: z.enum([
+    "MANUAL_SELECTION",
+    "AUTOMATIC_LOWEST_PRICE",
+    "AUTOMATIC_OVERRIDE",
+    "DEFERRED",
+    "NONE_CORRECT",
+    "ADDITIONAL_CHECK_REQUESTED"
+  ]).optional()
+}).strict().superRefine((decision, context) => {
+  if (decision.status === "SELECTED") {
+    if (!decision.selectedSupplierOptionId) {
+      context.addIssue({ code: "custom", message: "Selected supplier option is required." });
+    }
+    if (decision.selectedSupplierLineIds.length === 0) {
+      context.addIssue({ code: "custom", message: "Selected supplier lines are required." });
+    }
+    if (!decision.evidenceSnapshot) {
+      context.addIssue({ code: "custom", message: "Decision evidence snapshot is required." });
+    }
+  }
 });
+
+export const SupplierDecisionSchema = z.union([
+  SupplierDecisionV2Schema,
+  LegacySupplierDecisionSchema
+]);
 export type SupplierDecision = z.infer<typeof SupplierDecisionSchema>;
+export type SupplierDecisionV2 = z.infer<typeof SupplierDecisionV2Schema>;
+
+export const SupplierDecisionReviewActionSchema = z.object({
+  id: z.string(),
+  supplierDecisionId: z.string(),
+  basisPositionId: z.string(),
+  action: z.enum([
+    "MANUAL_SELECTION",
+    "AUTOMATIC_OVERRIDE",
+    "DEFER",
+    "NONE_CORRECT",
+    "REQUEST_ADDITIONAL_CHECK"
+  ]),
+  previousDecisionId: z.string().nullable(),
+  operator: z.string(),
+  comment: z.string(),
+  timestamp: z.string().datetime()
+}).strict();
+export type SupplierDecisionReviewAction = z.infer<
+  typeof SupplierDecisionReviewActionSchema
+>;
 
 export const MatchReviewActionSchema = z.object({
   id: z.string(),
@@ -501,6 +692,28 @@ export const ExtractionEnvelopeSchema = z.object({
   extraction: PageExtractionSchema
 });
 export type ExtractionEnvelope = z.infer<typeof ExtractionEnvelopeSchema>;
+
+export const ExtractionMethodSchema = z.enum([
+  "OPENAI_STRUCTURED",
+  "DETERMINISTIC_TEXT_LAYER",
+  "OCR_VISUAL"
+]);
+export type ExtractionMethod = z.infer<typeof ExtractionMethodSchema>;
+
+export const ExtractionRunProvenanceSchema = z.object({
+  extractionMethod: ExtractionMethodSchema,
+  documentRevisionId: z.string(),
+  pageNumber: z.number().int().positive(),
+  rawTextItemsHash: z.string(),
+  parserVersion: z.string(),
+  validationStatus: z.enum(["COMPLETED", "NEEDS_REVIEW", "FAILED"]),
+  confidence: z.number().min(0).max(1),
+  fallbackCandidateBlockIds: z.array(z.string()),
+  createdAt: z.string().datetime()
+});
+export type ExtractionRunProvenance = z.infer<
+  typeof ExtractionRunProvenanceSchema
+>;
 
 export const TargetedRecheckSchema = z.object({
   changes: z.array(

@@ -404,7 +404,7 @@ function memoryFromPilot(state: PilotState): AgentMemoryRecord[] {
       approved: true,
       active: true,
       version: 1,
-      createdAt: decision.timestamp
+      createdAt: "decidedAt" in decision ? decision.decidedAt : decision.timestamp
     })
   );
   const candidates = state.matchReviewActions.map((action) =>

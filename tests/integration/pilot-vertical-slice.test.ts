@@ -205,7 +205,11 @@ describe("real extraction boundary with fake OpenAI response", () => {
     const serialized = JSON.stringify(body);
     expect(serialized).not.toContain("basisPositions");
     expect(serialized).not.toContain("Basis-LV");
+    expect(serialized).not.toContain("sourceText");
     expect(body).toHaveProperty("textItems");
+    expect(body.textItems?.[0]).not.toHaveProperty("order");
+    expect(body.textItems?.[0].region).toEqual([0.1, 0.2, 0.2, 0.03]);
+    expect(body.regionFormat).toBe("[x,y,width,height]");
   });
 
   it("persists a run across repository instances", async () => {

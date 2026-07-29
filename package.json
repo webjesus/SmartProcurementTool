@@ -6,9 +6,11 @@
   "scripts": {
     "dev": "concurrently -k -n WEB,WORKER -c blue,magenta \"npm:dev:web\" \"npm:dev:worker\"",
     "dev:web": "next dev",
+    "dev:web:lan": "next dev --hostname 0.0.0.0",
     "dev:worker": "tsx watch src/worker/index.ts",
     "build": "next build",
     "start": "next start",
+    "start:lan": "next start --hostname 0.0.0.0",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format": "prettier --write .",
@@ -18,8 +20,13 @@
     "openai:models": "tsx scripts/openai-models.ts",
     "corpus:scan": "tsx scripts/corpus-scan.ts",
     "corpus:process": "tsx scripts/corpus-process.ts",
+    "corpus:deterministic": "tsx scripts/deterministic-extract.ts",
+    "corpus:deterministic-project": "tsx scripts/deterministic-project.ts",
+    "corpus:demo-readiness-audit": "tsx scripts/demo-readiness-audit.ts",
+    "corpus:cost-analysis": "tsx scripts/corpus-cost-analysis.ts",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate"
+    "db:migrate": "drizzle-kit migrate",
+    "db:import-legacy-decisions": "tsx scripts/import-legacy-central-decisions.ts"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",

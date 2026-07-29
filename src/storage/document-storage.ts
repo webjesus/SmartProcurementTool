@@ -2,9 +2,11 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ExtractionResult, RecheckResult } from "@/ai/openai-extraction-adapter";
 import type {
+  ExtractionRunProvenance,
   MatchReviewAction,
   PilotAnalysis,
-  SupplierDecision
+  SupplierDecision,
+  SupplierDecisionReviewAction
 } from "@/domain/contracts";
 import type { AuditRecord, DocumentStorage, ReviewActionRecord } from "@/domain/repositories";
 import type { ValidationIssue } from "@/domain/validation";
@@ -94,6 +96,7 @@ export interface PersistedPilotRun {
   pageImageAsset: string;
   cropAssets: Record<string, string>;
   recheck: RecheckResult | null;
+  provenance?: ExtractionRunProvenance;
   createdAt: string;
 }
 
@@ -115,8 +118,10 @@ export interface PilotState {
   reviewActions: PersistedPilotReviewAction[];
   matchReviewActions: MatchReviewAction[];
   supplierDecisions: SupplierDecision[];
+  supplierDecisionReviewActions: SupplierDecisionReviewAction[];
   auditEvents: AuditRecord[];
   analysis: PilotAnalysis | null;
+  analysisVersions?: PilotAnalysis[];
 }
 
 export class LocalPilotPersistence {
@@ -143,8 +148,16 @@ export class LocalPilotPersistence {
         supplierDecisions: Array.isArray(parsed.supplierDecisions)
           ? parsed.supplierDecisions
           : [],
+        supplierDecisionReviewActions: Array.isArray(
+          parsed.supplierDecisionReviewActions
+        )
+          ? parsed.supplierDecisionReviewActions
+          : [],
         auditEvents: Array.isArray(parsed.auditEvents) ? parsed.auditEvents : [],
-        analysis: parsed.analysis ?? null
+        analysis: parsed.analysis ?? null,
+        analysisVersions: Array.isArray(parsed.analysisVersions)
+          ? parsed.analysisVersions
+          : []
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
@@ -154,8 +167,10 @@ export class LocalPilotPersistence {
           reviewActions: [],
           matchReviewActions: [],
           supplierDecisions: [],
+          supplierDecisionReviewActions: [],
           auditEvents: [],
-          analysis: null
+          analysis: null,
+          analysisVersions: []
         };
       }
       throw error;
@@ -170,6 +185,40 @@ export class LocalPilotPersistence {
     await this.write(state);
   }
 
+  async appendImmutableRuns(
+    runs: readonly PersistedPilotRun[]
+  ): Promise<{ appended: number; cached: number }> {
+    const state = await this.read();
+    let appended = 0;
+    let cached = 0;
+    for (const run of runs) {
+      const samePage = state.runs.find(
+        (item) =>
+          item.document.id === run.document.id &&
+          item.document.pageNumber === run.document.pageNumber
+      );
+      if (samePage) {
+        if (samePage.id !== run.id) {
+          throw new Error(
+            `Immutable extraction page already exists: ${run.document.id} page ${run.document.pageNumber} (${samePage.id}).`
+          );
+        }
+        if (JSON.stringify(samePage) !== JSON.stringify(run)) {
+          throw new Error(`Immutable extraction run ${run.id} conflicts with persisted data.`);
+        }
+        cached += 1;
+        continue;
+      }
+      if (state.runs.some((item) => item.id === run.id)) {
+        throw new Error(`Extraction run ID ${run.id} already belongs to another page.`);
+      }
+      state.runs.push(run);
+      appended += 1;
+    }
+    if (appended > 0) await this.write(state);
+    return { appended, cached };
+  }
+
   async appendReview(
     action: PersistedPilotReviewAction,
     auditEvent: AuditRecord
@@ -182,6 +231,16 @@ export class LocalPilotPersistence {
 
   async saveAnalysis(analysis: PilotAnalysis): Promise<void> {
     const state = await this.read();
+    state.analysisVersions ??= [];
+    if (
+      state.analysis &&
+      state.analysis.id !== analysis.id &&
+      !state.analysisVersions.some(
+        (candidate) => candidate.id === state.analysis!.id
+      )
+    ) {
+      state.analysisVersions.push(state.analysis);
+    }
     state.analysis = analysis;
     await this.write(state);
   }
@@ -200,16 +259,70 @@ export class LocalPilotPersistence {
 
   async appendSupplierDecision(
     decision: SupplierDecision,
-    auditEvent: AuditRecord
+    auditEvent: AuditRecord,
+    reviewAction?: SupplierDecisionReviewAction
   ): Promise<void> {
     const state = await this.read();
-    const existing = state.supplierDecisions.findIndex(
-      (item) => item.basisPositionId === decision.basisPositionId
-    );
-    if (existing >= 0) state.supplierDecisions[existing] = decision;
-    else state.supplierDecisions.push(decision);
+    if (state.supplierDecisions.some((item) => item.id === decision.id)) {
+      throw new Error(`SupplierDecision ${decision.id} already exists.`);
+    }
+    state.supplierDecisions.push(decision);
+    if (reviewAction) state.supplierDecisionReviewActions.push(reviewAction);
     state.auditEvents.push(auditEvent);
     await this.write(state);
+  }
+
+  async importSupplierDecisionHistory(input: {
+    decisions: readonly SupplierDecision[];
+    reviewActions: readonly SupplierDecisionReviewAction[];
+    importedBy: string;
+    importedAt: string;
+  }): Promise<{ imported: number; skipped: number }> {
+    const state = await this.read();
+    let imported = 0;
+    let skipped = 0;
+    for (const decision of input.decisions) {
+      const existing = state.supplierDecisions.find(
+        (item) => item.id === decision.id
+      );
+      if (existing) {
+        if (JSON.stringify(existing) !== JSON.stringify(decision)) {
+          throw new Error(
+            `SupplierDecision ${decision.id} conflicts with local history.`
+          );
+        }
+        skipped += 1;
+        continue;
+      }
+      state.supplierDecisions.push(decision);
+      state.auditEvents.push({
+        id: `import:${decision.id}`,
+        issueId: `decision:${decision.basisPositionId}`,
+        action: "IMPORT_REVIEW_PACKAGE",
+        previousValue: null,
+        newValue: decision,
+        operator: input.importedBy,
+        timestamp: input.importedAt,
+        reason: "Portable review package import",
+        comment: decision.comment,
+        entityType: "SupplierDecision",
+        entityId: decision.basisPositionId
+      });
+      imported += 1;
+    }
+    for (const action of input.reviewActions) {
+      const existing = state.supplierDecisionReviewActions.find(
+        (item) => item.id === action.id
+      );
+      if (existing && JSON.stringify(existing) !== JSON.stringify(action)) {
+        throw new Error(
+          `SupplierDecisionReviewAction ${action.id} conflicts with local history.`
+        );
+      }
+      if (!existing) state.supplierDecisionReviewActions.push(action);
+    }
+    await this.write(state);
+    return { imported, skipped };
   }
 
   private async write(state: PilotState): Promise<void> {

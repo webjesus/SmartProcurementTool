@@ -13,10 +13,10 @@ import {
   Scale,
   Settings2
 } from "lucide-react";
-import { project } from "@/lib/demo-data";
 import { ProcessingPanel } from "@/components/processing-panel";
+import { useDecisionIdentity } from "@/components/decision-identity";
 
-const nav = [
+const developerNav = [
   { href: "/", label: "Projektübersicht", icon: LayoutDashboard },
   { href: "/dokumente", label: "Dokumente", icon: Files },
   { href: "/gefundene-daten", label: "Gefundene Daten", icon: FileSearch },
@@ -27,10 +27,32 @@ const nav = [
   { href: "/export", label: "Export", icon: FileOutput }
 ];
 
-export function AppShell({ children }: { children: React.ReactNode }) {
+const liveNav = [
+  {
+    href: "/lv-vergleich",
+    label: "LV-Vergleich",
+    icon: Scale,
+    count: undefined
+  }
+];
+
+export function AppShell({
+  children,
+  devUiEnabled
+}: {
+  children: React.ReactNode;
+  devUiEnabled: boolean;
+}) {
   const pathname = usePathname();
+  const identity = useDecisionIdentity();
+  const nav = devUiEnabled ? developerNav : liveNav;
+  const initials = identity.user?.displayName
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part[0]?.toLocaleUpperCase("de"))
+    .join("") || "—";
   return (
-    <div className="app-frame">
+    <div className={`app-frame ${devUiEnabled ? "dev-shell" : "live-shell"}`}>
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">SPT</div>
@@ -41,8 +63,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
         <div className="sidebar-project">
           <span>AKTIVES PROJEKT</span>
-          <strong>{project.name}</strong>
-          <small>{project.reference}</small>
+          <strong>{devUiEnabled ? "Projektansicht" : "Heizung LV-Vergleich"}</strong>
+          <small>{devUiEnabled ? "Entwicklungsmodus" : "Lokaler Arbeitsmodus"}</small>
         </div>
         <nav className="main-nav" aria-label="Hauptnavigation">
           {nav.map(({ href, label, icon: Icon, count }) => {
@@ -67,17 +89,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <main className="main">
         <header className="topbar">
           <div className="breadcrumbs">
-            <span>{project.reference}</span>
+            <span>{devUiEnabled ? "Projektansicht" : "Heizung"}</span>
             <i>/</i>
             <strong>{nav.find((item) => item.href === pathname)?.label ?? "Smart Procurement Tool"}</strong>
           </div>
           <div className="topbar-actions">
             <span className="system-state"><i /> Systeme bereit</span>
-            <button className="avatar" aria-label="Operatorprofil">NK</button>
+            {identity.enabled && identity.user ? (
+              <span className="decision-user-label">
+                Bearbeitet von: <strong>{identity.user.displayName}</strong>
+              </span>
+            ) : null}
+            <button className="avatar" aria-label="Operatorprofil">{initials}</button>
           </div>
         </header>
         <div className="page-content">
-          <ProcessingPanel />
+          {devUiEnabled ? <ProcessingPanel /> : null}
           {children}
         </div>
       </main>

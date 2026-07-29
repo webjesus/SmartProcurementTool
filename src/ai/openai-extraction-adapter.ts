@@ -60,6 +60,8 @@ export function buildExtractionRequestBody(input: {
   page: ParsedPage;
   includeDocumentMetadata?: boolean;
 }) {
+  const compactCoordinate = (value: number) =>
+    Math.round(value * 10_000) / 10_000;
   return {
     documentId: input.documentId,
     pageNumber: input.page.pageNumber,
@@ -68,11 +70,16 @@ export function buildExtractionRequestBody(input: {
     ...(input.page.mode === "SCAN"
       ? {}
       : {
+          regionFormat: "[x,y,width,height]",
           textItems: input.page.textItems.map((item) => ({
             id: item.id,
             text: item.rawText,
-            order: item.order,
-            region: item.region
+            region: [
+              compactCoordinate(item.region.x),
+              compactCoordinate(item.region.y),
+              compactCoordinate(item.region.width),
+              compactCoordinate(item.region.height)
+            ]
           }))
         })
   };
@@ -350,7 +357,7 @@ export class OfficialOpenAiExtractionAdapter implements OpenAiExtractionAdapter 
     this.client = new OpenAI({
       apiKey,
       timeout: 90_000,
-      maxRetries: 2
+      maxRetries: Number(process.env.SPT_OPENAI_MAX_RETRIES ?? 1)
     });
     this.extractionModel = process.env.OPENAI_EXTRACTION_MODEL ?? "gpt-5.6-sol";
     this.recheckModel = process.env.OPENAI_RECHECK_MODEL ?? this.extractionModel;
@@ -562,18 +569,24 @@ export class OfficialOpenAiExtractionAdapter implements OpenAiExtractionAdapter 
         model: input.model,
         source: input.cacheSource
       });
-      const response = await this.client.responses.parse({
-        model: input.model,
-        instructions: input.systemPrompt,
-        input: [{ role: "user", content: input.content }],
-        text: {
-          format: zodTextFormat(CompactNativeExtractionSchema, "procurement_native_compact"),
-          verbosity: "low"
+      const response = await this.client.responses.parse(
+        {
+          model: input.model,
+          instructions: input.systemPrompt,
+          input: [{ role: "user", content: input.content }],
+          text: {
+            format: zodTextFormat(
+              CompactNativeExtractionSchema,
+              "procurement_native_compact"
+            ),
+            verbosity: "low"
+          },
+          reasoning: { effort: "low" },
+          max_output_tokens: this.maxOutputTokens,
+          store: false
         },
-        reasoning: { effort: "low" },
-        max_output_tokens: this.maxOutputTokens,
-        store: false
-      });
+        { idempotencyKey: cacheKey }
+      );
       const completedAt = new Date();
       if (!response.output_parsed) {
         throw new Error("OpenAI returned no compact structured extraction.");
@@ -639,17 +652,23 @@ export class OfficialOpenAiExtractionAdapter implements OpenAiExtractionAdapter 
         source: input.cacheSource
       });
 
-      const response = await this.client.responses.parse({
-        model: input.model,
-        instructions: input.systemPrompt,
-        input: [{ role: "user", content: input.content }],
-        text: {
-          format: zodTextFormat(ExtractionEnvelopeSchema, "procurement_page_extraction")
+      const response = await this.client.responses.parse(
+        {
+          model: input.model,
+          instructions: input.systemPrompt,
+          input: [{ role: "user", content: input.content }],
+          text: {
+            format: zodTextFormat(
+              ExtractionEnvelopeSchema,
+              "procurement_page_extraction"
+            )
+          },
+          reasoning: { effort: "low" },
+          max_output_tokens: this.maxOutputTokens,
+          store: false
         },
-        reasoning: { effort: "low" },
-        max_output_tokens: this.maxOutputTokens,
-        store: false
-      });
+        { idempotencyKey: cacheKey }
+      );
       const completedAt = new Date();
 
       if (!response.output_parsed) {
