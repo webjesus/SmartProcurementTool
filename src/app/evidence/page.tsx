@@ -8,6 +8,7 @@ import type {
   DecisionEvidenceSource,
   OfferLine
 } from "@/domain/contracts";
+import { localCorpusEnabled } from "@/services/deployment-profile";
 import { LocalPilotPersistence } from "@/storage/document-storage";
 
 export const runtime = "nodejs";
@@ -48,7 +49,7 @@ export default async function EvidencePage({
 }: {
   searchParams: Promise<SearchParams>;
 }) {
-  if (process.env.LOCAL_CORPUS_ENABLED !== "true") notFound();
+  if (!localCorpusEnabled()) notFound();
   const params = await searchParams;
   const documentId = value(params, "documentId");
   const documentRevisionId = value(params, "documentRevisionId");

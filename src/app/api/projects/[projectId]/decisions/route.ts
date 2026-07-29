@@ -8,6 +8,7 @@ import {
   currentDecisionProjectMetadata,
   DecisionInputError
 } from "@/services/decision-sync-service";
+import { isVercelPreview } from "@/services/deployment-profile";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,6 +18,16 @@ type RouteContext = {
 };
 
 export async function GET(request: Request, context: RouteContext) {
+  if (isVercelPreview()) {
+    return NextResponse.json({
+      drafts: [],
+      decisions: [],
+      events: [],
+      analysisVersionId: null,
+      deploymentMode: "VERCEL_PREVIEW",
+      readOnly: true
+    });
+  }
   try {
     const { projectId } = await context.params;
     const metadata = await currentDecisionProjectMetadata();

@@ -12,13 +12,19 @@ import {
 } from "@/domain/project-review";
 import { normalizeLvPositionReference } from "@/domain/matching";
 import { buildProjectCompletenessInvariant } from "@/domain/project-invariant";
+import { previewLocalDataResponse } from "@/services/deployment-api";
+import {
+  isVercelPreview,
+  localCorpusEnabled
+} from "@/services/deployment-profile";
 import { LocalPilotPersistence } from "@/storage/document-storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
-  if (process.env.LOCAL_CORPUS_ENABLED !== "true") {
+  if (isVercelPreview()) return previewLocalDataResponse();
+  if (!localCorpusEnabled()) {
     return NextResponse.json(
       {
         error: "LOCAL_CORPUS_DISABLED",

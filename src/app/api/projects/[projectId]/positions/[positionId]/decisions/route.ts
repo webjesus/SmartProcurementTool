@@ -9,6 +9,8 @@ import {
   DecisionInputError,
   DecisionSyncService
 } from "@/services/decision-sync-service";
+import { previewPersistenceResponse } from "@/services/deployment-api";
+import { isVercelPreview } from "@/services/deployment-profile";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,6 +20,13 @@ type RouteContext = {
 };
 
 export async function GET(request: Request, context: RouteContext) {
+  if (isVercelPreview()) {
+    return NextResponse.json({
+      decisions: [],
+      deploymentMode: "VERCEL_PREVIEW",
+      readOnly: true
+    });
+  }
   try {
     const { projectId, positionId } = await context.params;
     const metadata = await currentDecisionProjectMetadata();
@@ -38,6 +47,7 @@ export async function GET(request: Request, context: RouteContext) {
 }
 
 export async function POST(request: Request, context: RouteContext) {
+  if (isVercelPreview()) return previewPersistenceResponse();
   try {
     const { projectId, positionId } = await context.params;
     const parsed = CreateCentralDecisionInputSchema.safeParse(

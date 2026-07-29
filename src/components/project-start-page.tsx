@@ -22,10 +22,10 @@ function date(value: string): string {
   });
 }
 
-export function ProjectStartPage() {
+export function ProjectStartPage({ preview = false }: { preview?: boolean }) {
   const identity = useDecisionIdentity();
   const [projects, setProjects] = useState<ProjectCard[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(identity.enabled);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -74,6 +74,11 @@ export function ProjectStartPage() {
           <Plus size={17} /> Neues Projekt erstellen
         </button>
       </header>
+      {preview ? (
+        <p className="notice" data-vercel-preview>
+          Vercel-Vorschau: Lokale Projekte und Schreibvorgänge sind deaktiviert.
+        </p>
+      ) : null}
       {loading ? <p>Projekte werden geladen...</p> : null}
       {error ? <p className="action-error">{error}</p> : null}
       <div className="project-card-grid">

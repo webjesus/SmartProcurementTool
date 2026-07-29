@@ -8,12 +8,20 @@ import {
   centralDecisionApiContext,
   decisionApiError
 } from "@/services/decision-api";
+import { isVercelPreview } from "@/services/deployment-profile";
 import { LocalPilotPersistence } from "@/storage/document-storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
+  if (isVercelPreview()) {
+    return NextResponse.json({
+      projects: [],
+      deploymentMode: "VERCEL_PREVIEW",
+      readOnly: true
+    });
+  }
   try {
     const { user } = await centralDecisionApiContext(request);
     const persistence = new LocalPilotPersistence(

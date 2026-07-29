@@ -27,8 +27,14 @@ import {
   LocalPilotPersistence,
   type PersistedPilotReviewAction
 } from "@/storage/document-storage";
+import { previewPersistenceResponse } from "@/services/deployment-api";
+import {
+  isVercelPreview,
+  localCorpusEnabled
+} from "@/services/deployment-profile";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 const ReviewActionInput = z.object({
   runId: z.string().min(1).optional(),
@@ -96,8 +102,9 @@ function replayActions(
 }
 
 export async function POST(request: Request) {
+  if (isVercelPreview()) return previewPersistenceResponse();
   const body = await request.json();
-  if (process.env.LOCAL_CORPUS_ENABLED === "true" && body?.kind === "MATCH") {
+  if (localCorpusEnabled() && body?.kind === "MATCH") {
     const parsedMatch = MatchActionInput.safeParse(body);
     if (!parsedMatch.success) {
       return NextResponse.json(
@@ -207,7 +214,7 @@ export async function POST(request: Request) {
     );
   }
 
-  if (process.env.LOCAL_CORPUS_ENABLED === "true" && body?.kind === "DECISION") {
+  if (localCorpusEnabled() && body?.kind === "DECISION") {
     const { kind: _kind, ...decisionBody } = body as Record<string, unknown>;
     void _kind;
     const parsedDecision = SupplierDecisionDraftSchema.safeParse(decisionBody);
@@ -476,7 +483,7 @@ export async function POST(request: Request) {
     );
   }
 
-  if (process.env.LOCAL_CORPUS_ENABLED === "true") {
+  if (localCorpusEnabled()) {
     if (!parsed.data.runId || !parsed.data.lineId || !parsed.data.field) {
       return NextResponse.json(
         { error: "PILOT_CONTEXT_REQUIRED", message: "runId, lineId and field are required." },
@@ -591,7 +598,14 @@ export async function POST(request: Request) {
 }
 
 export async function GET() {
-  if (process.env.LOCAL_CORPUS_ENABLED === "true") {
+  if (isVercelPreview()) {
+    return NextResponse.json({
+      actions: [],
+      auditEvents: [],
+      persistence: "VERCEL_READ_ONLY"
+    });
+  }
+  if (localCorpusEnabled()) {
     const persistence = new LocalPilotPersistence(
       path.resolve(/*turbopackIgnore: true*/ process.cwd(), ".data"),
       true

@@ -11,6 +11,9 @@ import {
 import { CentralDatabaseUnavailableError } from "@/db/client";
 import { DecisionDisplayNameSchema } from "@/domain/central-decision";
 import { getDecisionUnitOfWork } from "@/repositories/decision-repository-factory";
+import { DecisionPersistenceConfigurationError } from "@/services/decision-persistence-config";
+import { previewPersistenceResponse } from "@/services/deployment-api";
+import { isVercelPreview } from "@/services/deployment-profile";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -20,6 +23,15 @@ const LoginInput = z.object({
 });
 
 function sessionFailure(error: unknown): NextResponse {
+  if (error instanceof DecisionPersistenceConfigurationError) {
+    return NextResponse.json(
+      {
+        error: "PERSISTENCE_CONFIGURATION_INVALID",
+        message: error.message
+      },
+      { status: 503 }
+    );
+  }
   if (error instanceof Error && error.message === "USER_CREATE_FAILED") {
     return NextResponse.json(
       {
@@ -51,8 +63,9 @@ function sessionFailure(error: unknown): NextResponse {
 }
 
 export async function GET(request: Request) {
+  if (isVercelPreview()) return previewPersistenceResponse();
   try {
-    const unit = getDecisionUnitOfWork();
+    const unit = await getDecisionUnitOfWork();
     const user = await authenticatedDecisionUser(
       request,
       unit.repositories.users
@@ -67,6 +80,7 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  if (isVercelPreview()) return previewPersistenceResponse();
   const parsed = LoginInput.safeParse(
     await request.json().catch(() => null)
   );
@@ -81,7 +95,7 @@ export async function POST(request: Request) {
     );
   }
   try {
-    const unit = getDecisionUnitOfWork();
+    const unit = await getDecisionUnitOfWork();
     const token = createSessionToken();
     const expiresAt = new Date(
       Date.now() + DECISION_SESSION_MAX_AGE_SECONDS * 1000

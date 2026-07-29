@@ -13,12 +13,15 @@ import {
   currentDecisionProjectMetadata,
   DecisionSyncService
 } from "@/services/decision-sync-service";
+import { previewLocalDataResponse } from "@/services/deployment-api";
+import { isVercelPreview } from "@/services/deployment-profile";
 import { LocalPilotPersistence } from "@/storage/document-storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
+  if (isVercelPreview()) return previewLocalDataResponse();
   try {
     const url = new URL(request.url);
     const format = url.searchParams.get("format") ?? "xlsx";

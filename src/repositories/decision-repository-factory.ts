@@ -1,6 +1,13 @@
-import { getDecisionDatabase } from "@/db/client";
-import { createPostgresDecisionUnitOfWork } from "@/repositories/postgres-decision-repositories";
+import { decisionPersistenceMode } from "@/services/decision-persistence-config";
 
-export function getDecisionUnitOfWork() {
+export async function getDecisionUnitOfWork() {
+  if (decisionPersistenceMode() !== "CENTRAL_SERVER") {
+    throw new Error("PERSISTENCE_UNAVAILABLE");
+  }
+  const [{ getDecisionDatabase }, { createPostgresDecisionUnitOfWork }] =
+    await Promise.all([
+      import("@/db/client"),
+      import("@/repositories/postgres-decision-repositories")
+    ]);
   return createPostgresDecisionUnitOfWork(getDecisionDatabase());
 }

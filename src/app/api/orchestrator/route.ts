@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { LocalProjectRunService } from "@/orchestrator/project-service";
+import { previewPersistenceResponse } from "@/services/deployment-api";
+import {
+  isVercelPreview,
+  localCorpusEnabled
+} from "@/services/deployment-profile";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,7 +24,7 @@ function disabledResponse() {
 }
 
 export async function GET() {
-  if (process.env.LOCAL_CORPUS_ENABLED !== "true") return disabledResponse();
+  if (!localCorpusEnabled()) return disabledResponse();
   const service = new LocalProjectRunService();
   return NextResponse.json(
     { ...(await service.get()), available: true },
@@ -28,7 +33,8 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  if (process.env.LOCAL_CORPUS_ENABLED !== "true") {
+  if (isVercelPreview()) return previewPersistenceResponse();
+  if (!localCorpusEnabled()) {
     return NextResponse.json(
       { error: "LOCAL_ORCHESTRATOR_DISABLED" },
       { status: 409 }
@@ -64,4 +70,3 @@ export async function POST(request: Request) {
     );
   }
 }
-

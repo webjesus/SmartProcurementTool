@@ -14,6 +14,8 @@ import {
   currentDecisionProjectMetadata,
   DecisionInputError
 } from "@/services/decision-sync-service";
+import { previewPersistenceResponse } from "@/services/deployment-api";
+import { isVercelPreview } from "@/services/deployment-profile";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -41,6 +43,13 @@ async function validateProject(projectId: string) {
 }
 
 export async function GET(request: Request, context: RouteContext) {
+  if (isVercelPreview()) {
+    return NextResponse.json({
+      workspace: null,
+      deploymentMode: "VERCEL_PREVIEW",
+      readOnly: true
+    });
+  }
   try {
     const { projectId } = await context.params;
     await validateProject(projectId);
@@ -65,6 +74,7 @@ export async function GET(request: Request, context: RouteContext) {
 }
 
 export async function PUT(request: Request, context: RouteContext) {
+  if (isVercelPreview()) return previewPersistenceResponse();
   try {
     const { projectId } = await context.params;
     await validateProject(projectId);

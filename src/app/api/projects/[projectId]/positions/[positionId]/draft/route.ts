@@ -5,6 +5,8 @@ import {
   decisionApiError
 } from "@/services/decision-api";
 import { DecisionInputError, DecisionSyncService } from "@/services/decision-sync-service";
+import { previewPersistenceResponse } from "@/services/deployment-api";
+import { isVercelPreview } from "@/services/deployment-profile";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -14,6 +16,13 @@ type RouteContext = {
 };
 
 export async function GET(request: Request, context: RouteContext) {
+  if (isVercelPreview()) {
+    return NextResponse.json({
+      draft: null,
+      deploymentMode: "VERCEL_PREVIEW",
+      readOnly: true
+    });
+  }
   try {
     const { projectId, positionId } = await context.params;
     const analysisVersionId = new URL(request.url).searchParams.get(
@@ -37,6 +46,7 @@ export async function GET(request: Request, context: RouteContext) {
 }
 
 export async function PUT(request: Request, context: RouteContext) {
+  if (isVercelPreview()) return previewPersistenceResponse();
   try {
     const { projectId, positionId } = await context.params;
     const parsed = SaveDecisionDraftInputSchema.safeParse(await request.json());
@@ -63,6 +73,7 @@ export async function PUT(request: Request, context: RouteContext) {
 }
 
 export async function DELETE(request: Request, context: RouteContext) {
+  if (isVercelPreview()) return previewPersistenceResponse();
   try {
     const { projectId, positionId } = await context.params;
     const query = new URL(request.url).searchParams;

@@ -18,6 +18,14 @@ import { centralProjectDecisionData } from "@/services/decision-sync-service";
 import { getDecisionDatabase } from "@/db/client";
 import { importCentralReviewPackage } from "@/services/central-review-package-import";
 import { decisionPersistenceMode } from "@/services/decision-persistence-config";
+import {
+  previewLocalDataResponse,
+  previewPersistenceResponse
+} from "@/services/deployment-api";
+import {
+  isVercelPreview,
+  localCorpusEnabled
+} from "@/services/deployment-profile";
 import { LocalPilotPersistence } from "@/storage/document-storage";
 
 export const runtime = "nodejs";
@@ -145,7 +153,7 @@ async function reviewPackageData() {
   const centralServerData =
     decisionPersistenceMode() === "CENTRAL_SERVER" && state.analysis
       ? await centralProjectDecisionData(
-          getDecisionUnitOfWork().repositories,
+          (await getDecisionUnitOfWork()).repositories,
           centralProjectId
         )
       : undefined;
@@ -334,7 +342,8 @@ async function xlsxResponse(
 }
 
 export async function GET(request: Request) {
-  if (process.env.LOCAL_CORPUS_ENABLED !== "true") {
+  if (isVercelPreview()) return previewLocalDataResponse();
+  if (!localCorpusEnabled()) {
     return NextResponse.json({ error: "LOCAL_CORPUS_DISABLED" }, { status: 503 });
   }
   const { reviewPackage, invariant } = await reviewPackageData();
@@ -362,7 +371,8 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  if (process.env.LOCAL_CORPUS_ENABLED !== "true") {
+  if (isVercelPreview()) return previewPersistenceResponse();
+  if (!localCorpusEnabled()) {
     return NextResponse.json({ error: "LOCAL_CORPUS_DISABLED" }, { status: 503 });
   }
   const parsed = ReviewPackageSchema.safeParse(await request.json());
