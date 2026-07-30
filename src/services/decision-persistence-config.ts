@@ -6,7 +6,7 @@ import {
 export type DecisionPersistenceMode =
   | "CENTRAL_SERVER"
   | "LEGACY_LOCAL"
-  | "VERCEL_READ_ONLY";
+  | "BROWSER_LOCAL";
 
 export class DecisionPersistenceConfigurationError extends Error {
   constructor(message: string) {
@@ -18,8 +18,8 @@ export class DecisionPersistenceConfigurationError extends Error {
 export function decisionPersistenceMode(
   environment: DeploymentEnvironment = process.env
 ): DecisionPersistenceMode {
-  if (deploymentMode(environment) === "VERCEL_PREVIEW") {
-    return "VERCEL_READ_ONLY";
+  if (deploymentMode(environment) === "BROWSER_LOCAL") {
+    return "BROWSER_LOCAL";
   }
   const mode = environment.DECISION_PERSISTENCE_MODE;
   if (mode !== "CENTRAL_SERVER" && mode !== "LEGACY_LOCAL") {
@@ -38,6 +38,6 @@ export function decisionPersistenceMode(
 export function centralDecisionUiEnabled(
   environment: DeploymentEnvironment = process.env
 ): boolean {
-  if (deploymentMode(environment) === "VERCEL_PREVIEW") return false;
+  if (deploymentMode(environment) === "BROWSER_LOCAL") return false;
   return environment.DECISION_PERSISTENCE_MODE !== "LEGACY_LOCAL";
 }

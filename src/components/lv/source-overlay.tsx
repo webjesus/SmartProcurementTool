@@ -27,6 +27,7 @@ import { supplierDisplayRoleLabel } from "@/domain/supplier-option-read-model";
 import { resolveSupplierBrand } from "@/domain/brand-registry";
 import type { SourceRecord } from "./types";
 import { BrandMark } from "./brand-mark";
+import { BoundedAsyncCache } from "./pdf-document-cache";
 
 type RenderStatus = "loading" | "ready" | "error";
 export type FitMode = "CONTEXT" | "EVIDENCE" | "PAGE" | "WIDTH" | "CUSTOM";
@@ -34,9 +35,55 @@ export type SourceViewState = {
   pageNumber: number;
   zoom: number;
   fitMode: FitMode;
+  scrollLeft: number;
+  scrollTop: number;
 };
 
+type PdfDocumentProxyLike = {
+  numPages: number;
+  getPage: (pageNumber: number) => Promise<{
+    getViewport: (input: { scale: number }) => {
+      width: number;
+      height: number;
+    };
+    render: (input: {
+      canvasContext: CanvasRenderingContext2D;
+      viewport: { width: number; height: number };
+      canvas: HTMLCanvasElement;
+    }) => { cancel: () => void; promise: Promise<void> };
+  }>;
+};
+type CachedPdfDocument = {
+  document: PdfDocumentProxyLike;
+  destroy: () => Promise<void>;
+};
+
+const pdfDocumentCache = new BoundedAsyncCache<CachedPdfDocument>(4);
+
+async function loadPdf(source: SourceRecord): Promise<CachedPdfDocument> {
+  const url = pdfUrl(source);
+  return pdfDocumentCache.get(
+    `${source.documentRevisionId}:${url}`,
+    async () => {
+      const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+      pdfjs.GlobalWorkerOptions.workerSrc = "/api/local/pdf-worker";
+      const response = await fetch(url, { cache: "no-store" });
+      if (!response.ok) throw new Error(`PDF ${response.status}`);
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (bytes.byteLength === 0) throw new Error("PDF ist leer.");
+      const task = pdfjs.getDocument({ data: bytes });
+      const document = await task.promise;
+      return {
+        document: document as unknown as PdfDocumentProxyLike,
+        destroy: () => task.destroy()
+      };
+    },
+    (cached) => cached.destroy()
+  );
+}
+
 function pdfUrl(source: SourceRecord): string {
+  if (source.pdfUrl) return source.pdfUrl;
   const params = new URLSearchParams({
     documentId: source.documentId,
     documentRevisionId: source.documentRevisionId
@@ -74,7 +121,9 @@ function PdfCanvas({
   fitMode,
   showHighlight,
   onStatus,
-  onPageRendered
+  onPageRendered,
+  initialScroll,
+  onScrollChange
 }: {
   source: SourceRecord;
   pageNumber: number;
@@ -83,6 +132,8 @@ function PdfCanvas({
   showHighlight: boolean;
   onStatus: (status: RenderStatus, message?: string) => void;
   onPageRendered: (dimensions: { width: number; height: number }) => void;
+  initialScroll: { left: number; top: number };
+  onScrollChange: (scroll: { left: number; top: number }) => void;
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const pageRef = useRef<HTMLDivElement>(null);
@@ -109,22 +160,12 @@ function PdfCanvas({
     if (!containerSize.width || !containerSize.height || !canvasRef.current) return;
     let cancelled = false;
     let renderTask: { cancel: () => void; promise: Promise<void> } | null = null;
-    let loadingTask: { destroy: () => Promise<void>; promise: Promise<unknown> } | null =
-      null;
     const sequence = ++renderSequence.current;
 
     async function renderPage() {
       onStatus("loading");
       try {
-        const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-        pdfjs.GlobalWorkerOptions.workerSrc = "/api/local/pdf-worker";
-        const response = await fetch(pdfUrl(source), { cache: "no-store" });
-        if (!response.ok) throw new Error(`PDF ${response.status}`);
-        const bytes = new Uint8Array(await response.arrayBuffer());
-        if (bytes.byteLength === 0) throw new Error("PDF ist leer.");
-        const task = pdfjs.getDocument({ data: bytes });
-        loadingTask = task;
-        const document = await task.promise;
+        const { document } = await loadPdf(source);
         if (pageNumber < 1 || pageNumber > document.numPages) {
           throw new Error(`Seite ${pageNumber} ist nicht vorhanden.`);
         }
@@ -190,7 +231,15 @@ function PdfCanvas({
         setRenderedSize(dimensions);
         onPageRendered(dimensions);
         onStatus("ready");
-        if (
+        if (initialScroll.left > 0 || initialScroll.top > 0) {
+          requestAnimationFrame(() => {
+            stageRef.current?.scrollTo({
+              left: initialScroll.left,
+              top: initialScroll.top,
+              behavior: "auto"
+            });
+          });
+        } else if (
           (fitMode === "CONTEXT" || fitMode === "EVIDENCE") &&
           evidence &&
           pageNumber === source.pageNumber
@@ -230,7 +279,6 @@ function PdfCanvas({
       cancelled = true;
       renderSequence.current += 1;
       renderTask?.cancel();
-      void loadingTask?.destroy();
     };
   }, [
     containerSize.height,
@@ -238,6 +286,8 @@ function PdfCanvas({
     fitMode,
     onPageRendered,
     onStatus,
+    initialScroll.left,
+    initialScroll.top,
     pageNumber,
     source,
     zoom
@@ -247,7 +297,17 @@ function PdfCanvas({
     pageNumber === source.pageNumber ? source.evidence : [];
 
   return (
-    <div className="source-pdf-stage" ref={stageRef} data-pdf-stage>
+    <div
+      className="source-pdf-stage"
+      ref={stageRef}
+      data-pdf-stage
+      onScroll={(event) =>
+        onScrollChange({
+          left: event.currentTarget.scrollLeft,
+          top: event.currentTarget.scrollTop
+        })
+      }
+    >
       <div
         className="source-pdf-page"
         ref={pageRef}
@@ -302,17 +362,27 @@ export function InlineSourceViewer({
   const [pageNumber, setPageNumber] = useState(
     initialView?.pageNumber ?? activeSource?.pageNumber ?? 1
   );
-  const [zoom] = useState(initialView?.zoom ?? 1);
-  const [fitMode] = useState<FitMode>(
+  const [zoom, setZoom] = useState(initialView?.zoom ?? 1);
+  const [fitMode, setFitMode] = useState<FitMode>(
     initialView?.fitMode ?? "CONTEXT"
   );
+  const [scroll, setScroll] = useState({
+    left: initialView?.scrollLeft ?? 0,
+    top: initialView?.scrollTop ?? 0
+  });
   const [renderStatus, setRenderStatus] = useState<RenderStatus>("loading");
   const [renderError, setRenderError] = useState("");
   const sourceIndex = sources.findIndex((source) => source.key === activeKey);
 
   useEffect(() => {
-    onViewChange?.({ pageNumber, zoom, fitMode });
-  }, [fitMode, onViewChange, pageNumber, zoom]);
+    onViewChange?.({
+      pageNumber,
+      zoom,
+      fitMode,
+      scrollLeft: scroll.left,
+      scrollTop: scroll.top
+    });
+  }, [fitMode, onViewChange, pageNumber, scroll.left, scroll.top, zoom]);
 
   const updateStatus = useCallback((status: RenderStatus, message = "") => {
     setRenderStatus(status);
@@ -350,6 +420,42 @@ export function InlineSourceViewer({
           </span>
         </div>
         <nav>
+          <button
+            onClick={() => {
+              setFitMode("CUSTOM");
+              setZoom((value) => clamp(value - 0.1, 0.5, 3));
+            }}
+            aria-label="Verkleinern"
+          >
+            <Minus size={16} />
+          </button>
+          <button
+            onClick={() => {
+              setFitMode("CUSTOM");
+              setZoom(1);
+            }}
+            aria-label="Zoom auf 100 Prozent zurücksetzen"
+          >
+            {Math.round(zoom * 100)}%
+          </button>
+          <button
+            onClick={() => {
+              setFitMode("CUSTOM");
+              setZoom((value) => clamp(value + 0.1, 0.5, 3));
+            }}
+            aria-label="Vergrößern"
+          >
+            <Plus size={16} />
+          </button>
+          <button
+            onClick={() => {
+              setFitMode("WIDTH");
+              setZoom(1);
+              setScroll({ left: 0, top: 0 });
+            }}
+          >
+            An Breite anpassen
+          </button>
           <button
             onClick={() => setPageNumber((value) => Math.max(1, value - 1))}
             disabled={pageNumber <= 1}
@@ -399,6 +505,8 @@ export function InlineSourceViewer({
           showHighlight={renderStatus === "ready"}
           onStatus={updateStatus}
           onPageRendered={ignoreDimensions}
+          initialScroll={scroll}
+          onScrollChange={setScroll}
         />
         {renderStatus === "loading" ? (
           <div className="source-render-state">
@@ -454,6 +562,10 @@ export function SourceOverlay({
   const [fitMode, setFitMode] = useState<FitMode>(
     initialView?.fitMode ?? "CONTEXT"
   );
+  const [scroll, setScroll] = useState({
+    left: initialView?.scrollLeft ?? 0,
+    top: initialView?.scrollTop ?? 0
+  });
   const [showHighlight, setShowHighlight] = useState(true);
   const [showDetails, setShowDetails] = useState(true);
   const [renderStatus, setRenderStatus] = useState<RenderStatus>("loading");
@@ -462,8 +574,14 @@ export function SourceOverlay({
   const [canvasDimensions, setCanvasDimensions] = useState({ width: 0, height: 0 });
 
   useEffect(() => {
-    onViewChange?.({ pageNumber, zoom, fitMode });
-  }, [fitMode, onViewChange, pageNumber, zoom]);
+    onViewChange?.({
+      pageNumber,
+      zoom,
+      fitMode,
+      scrollLeft: scroll.left,
+      scrollTop: scroll.top
+    });
+  }, [fitMode, onViewChange, pageNumber, scroll.left, scroll.top, zoom]);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -636,7 +754,15 @@ export function SourceOverlay({
           >
             <Minus size={16} />
           </button>
-          <button onClick={() => { setFitMode("CUSTOM"); setZoom(1); }}>100%</button>
+          <button
+            onClick={() => {
+              setFitMode("CUSTOM");
+              setZoom(1);
+            }}
+            aria-label="Zoom auf 100 Prozent zurücksetzen"
+          >
+            {Math.round(zoom * 100)}%
+          </button>
           <button
             onClick={() => {
               setFitMode("CUSTOM");
@@ -710,6 +836,8 @@ export function SourceOverlay({
               showHighlight={showHighlight && renderStatus === "ready"}
               onStatus={updateStatus}
               onPageRendered={updateDimensions}
+              initialScroll={scroll}
+              onScrollChange={setScroll}
             />
             {renderStatus === "loading" ? (
               <div className="source-render-state">

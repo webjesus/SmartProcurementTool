@@ -31,6 +31,7 @@ export type LvSection = {
   id: string;
   title: string;
   positions: ProjectReviewPosition[];
+  totalPositionCount?: number;
 };
 
 export function latestPositionDecision(

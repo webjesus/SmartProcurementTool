@@ -113,6 +113,7 @@ export type SourceRecord = {
   documentId: string;
   documentRevisionId: string;
   documentLabel: string;
+  pdfUrl?: string;
   pageNumber: number;
   pageCount: number;
   evidence: EvidenceReference[];

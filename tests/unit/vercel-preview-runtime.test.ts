@@ -67,7 +67,7 @@ describe("Vercel preview runtime isolation", () => {
     expect(response.status).toBe(503);
     expect(await response.json()).toEqual({
       error: "LOCAL_DATA_UNAVAILABLE",
-      message: "Local corpus data is unavailable in preview mode."
+      message: "Server-local corpus data is unavailable in browser-local mode."
     });
     expect(read).not.toHaveBeenCalled();
   });
@@ -89,7 +89,7 @@ describe("Vercel preview runtime isolation", () => {
     expect(response.status).toBe(503);
     expect(await response.json()).toEqual({
       error: "PERSISTENCE_UNAVAILABLE",
-      message: "Server persistence is unavailable in preview mode."
+      message: "Server persistence is unavailable in browser-local mode."
     });
   });
 

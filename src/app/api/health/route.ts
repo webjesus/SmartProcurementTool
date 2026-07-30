@@ -32,8 +32,8 @@ export async function GET() {
     deploymentMode: profile,
     mode: localCorpusEnabled()
       ? "local-corpus"
-      : profile === "VERCEL_PREVIEW"
-        ? "vercel-preview"
+      : profile === "BROWSER_LOCAL"
+        ? "browser-local"
         : "synthetic-demo",
     openAiConfigured:
       profile === "LOCAL_ON_PREM" && Boolean(process.env.OPENAI_API_KEY),

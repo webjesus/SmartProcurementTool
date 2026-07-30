@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { AppShell } from "@/components/app-shell";
 import { DecisionIdentityProvider } from "@/components/decision-identity";
 import { centralDecisionUiEnabled } from "@/services/decision-persistence-config";
+import { isBrowserLocal } from "@/services/deployment-profile";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -19,11 +20,14 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   const devUiEnabled = process.env.DEV_UI_ENABLED === "true";
   const centralDecisionsEnabled = centralDecisionUiEnabled();
+  const browserLocal = isBrowserLocal();
   return (
     <html lang="de">
       <body>
         <DecisionIdentityProvider enabled={centralDecisionsEnabled}>
-          <AppShell devUiEnabled={devUiEnabled}>{children}</AppShell>
+          <AppShell devUiEnabled={devUiEnabled} browserLocal={browserLocal}>
+            {children}
+          </AppShell>
         </DecisionIdentityProvider>
       </body>
     </html>

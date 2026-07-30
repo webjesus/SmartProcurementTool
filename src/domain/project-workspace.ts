@@ -5,7 +5,9 @@ export const WorkspaceSourceStateSchema = z.object({
   documentRevisionId: z.string().min(1),
   page: z.number().int().positive(),
   zoom: z.number().min(0.5).max(3),
-  fitMode: z.enum(["CONTEXT", "EVIDENCE", "PAGE", "WIDTH", "CUSTOM"])
+  fitMode: z.enum(["CONTEXT", "EVIDENCE", "PAGE", "WIDTH", "CUSTOM"]),
+  scrollLeft: z.number().nonnegative().default(0),
+  scrollTop: z.number().nonnegative().default(0)
 });
 
 export const ProjectWorkspaceStateSchema = z.object({
@@ -30,6 +32,8 @@ export const ProjectWorkspaceStateSchema = z.object({
   detailsPaneTab: z
     .enum(["OFFER_DATA", "ORIGINAL_DOCUMENT"])
     .default("OFFER_DATA"),
+  fullscreenSourceOpen: z.boolean().default(false),
+  warningCenterOpen: z.boolean().default(false),
   sourceOverlay: WorkspaceSourceStateSchema.nullable().default(null)
 });
 export type ProjectWorkspaceState = z.infer<

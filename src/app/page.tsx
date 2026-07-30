@@ -1,6 +1,8 @@
+import { redirect } from "next/navigation";
 import { ProjectStartPage } from "@/components/project-start-page";
-import { isVercelPreview } from "@/services/deployment-profile";
+import { isBrowserLocal } from "@/services/deployment-profile";
 
 export default function OverviewPage() {
-  return <ProjectStartPage preview={isVercelPreview()} />;
+  if (isBrowserLocal()) redirect("/projects");
+  return <ProjectStartPage />;
 }

@@ -31,6 +31,35 @@ import {
   type LvSection
 } from "./lv-comparison-table";
 
+export type PositionSelectionState =
+  | "UNSELECTED"
+  | "SELECTED_VALID"
+  | "SELECTED_WITH_WARNING"
+  | "NO_OFFER"
+  | "MATCH_REVIEW_REQUIRED";
+
+export function derivePositionSelectionState(input: {
+  selected: boolean;
+  selectedHasWarning: boolean;
+  selectableCount: number;
+  explicitNoOfferCount: number;
+  optionCount: number;
+}): PositionSelectionState {
+  if (input.selected) {
+    return input.selectedHasWarning
+      ? "SELECTED_WITH_WARNING"
+      : "SELECTED_VALID";
+  }
+  if (input.selectableCount > 0) return "UNSELECTED";
+  if (
+    input.explicitNoOfferCount > 0 &&
+    input.explicitNoOfferCount === input.optionCount
+  ) {
+    return "NO_OFFER";
+  }
+  return "MATCH_REVIEW_REQUIRED";
+}
+
 const SUPPLIER_GRID_COLUMNS =
   "48px minmax(125px, 145px) minmax(210px, 1.1fr) minmax(190px, 1fr) minmax(75px, 88px) minmax(130px, 150px) 64px 52px";
 
@@ -245,8 +274,27 @@ function PositionGroup({
   const explicitNoOffers = position.options.filter(
     (option) => models.get(option.id)?.validity === "EXPLICIT_NO_OFFER"
   );
-  const summaryOption = selected ?? cheapest;
+  const summaryOption = selected;
   const summaryModel = summaryOption ? models.get(summaryOption.id) : undefined;
+  const selectionState = derivePositionSelectionState({
+    selected: Boolean(selected),
+    selectedHasWarning:
+      Boolean(selected) &&
+      Boolean(selected && hasWarning(selected, models.get(selected.id)!)),
+    selectableCount: selectable.length,
+    explicitNoOfferCount: explicitNoOffers.length,
+    optionCount: position.options.length
+  });
+  const collapsedStatus =
+    selectionState === "SELECTED_VALID"
+      ? { icon: "✓", text: summaryModel?.supplierDisplayName ?? "Ausgewählt" }
+      : selectionState === "SELECTED_WITH_WARNING"
+        ? { icon: "⚠", text: summaryModel?.supplierDisplayName ?? "Ausgewählt" }
+        : selectionState === "NO_OFFER"
+          ? { icon: "—", text: "Kein Angebot" }
+          : selectionState === "MATCH_REVIEW_REQUIRED"
+            ? { icon: "?", text: "Zuordnung prüfen" }
+            : { icon: "?", text: "Nicht ausgewählt" };
   const positionWarning =
     selectable.length === 0 ||
     position.options.some((option) => hasWarning(option, models.get(option.id)!));
@@ -288,15 +336,13 @@ function PositionGroup({
         {!expanded ? (
           <>
             <div className="lv-position-selected-supplier">
-              {summaryOption && summaryModel ? (
-                <BrandMark
-                  resolution={summaryModel.supplierBrand}
-                  label={summaryModel.supplierDisplayName}
-                  compact
-                />
-              ) : (
-                <strong>Nicht ausgewählt</strong>
-              )}
+              <span
+                className={`lv-collapsed-selection state-${selectionState.toLocaleLowerCase()}`}
+                data-position-selection-state={selectionState}
+              >
+                <i aria-hidden="true">{collapsedStatus.icon}</i>
+                <strong>{collapsedStatus.text}</strong>
+              </span>
             </div>
             <div className="lv-position-summary">
               {summaryModel ? (
@@ -305,7 +351,13 @@ function PositionGroup({
                   <span>{summaryModel.packageCompletenessLabelDe}</span>
                 </>
               ) : (
-                <span>Keine Angebotsdaten</span>
+                <span>
+                  {selectionState === "MATCH_REVIEW_REQUIRED"
+                    ? "Matching nicht bestätigt"
+                    : selectionState === "NO_OFFER"
+                      ? "Explizit nicht angeboten"
+                      : "Noch keine Auswahl"}
+                </span>
               )}
             </div>
             <div className="lv-position-summary-quantity">
@@ -313,7 +365,14 @@ function PositionGroup({
             </div>
             <div className="lv-position-summary-price">
               <strong>{formatCurrency(summaryModel?.price.total ?? null)}</strong>
-              <span>{summaryModel?.priceProvenanceLabelDe ?? "Kein Angebot vorhanden"}</span>
+              <span>
+                {summaryModel?.priceProvenanceLabelDe ??
+                  (selectionState === "MATCH_REVIEW_REQUIRED"
+                    ? "Zuordnung prüfen"
+                    : selectionState === "NO_OFFER"
+                      ? "Kein Angebot"
+                      : "Nicht ausgewählt")}
+              </span>
             </div>
           </>
         ) : (
@@ -387,38 +446,20 @@ function PositionGroup({
             return (
               <div
                 key={option.id}
-                className="lv-offer-grid lv-offer-row explicit-no-offer"
-                style={{ gridTemplateColumns: SUPPLIER_GRID_COLUMNS }}
+                className="lv-explicit-no-offer-compact"
                 data-option-validity="EXPLICIT_NO_OFFER"
                 data-supplier-label={option.supplierLabel}
               >
-                <span />
-                <BrandMark
-                  resolution={model.supplierBrand}
-                  label={model.supplierDisplayName}
-                />
-                <strong>Nicht angeboten</strong>
-                <span>Diese Ausschreibungsposition wird nicht angeboten.</span>
-                <span>—</span>
-                <span>—</span>
-                <div className="lv-offer-action">
-                  {model.sourceAvailable ? (
-                    <button
-                      onClick={() => onSupplierSource(option)}
-                      aria-label={`Quelle ${model.supplierDisplayName}`}
-                    >
-                      <ExternalLink size={18} />
-                    </button>
-                  ) : null}
-                </div>
-                <div className="lv-offer-action">
+                <strong>{model.supplierDisplayName} · Nicht angeboten</strong>
+                <span>Explizite Angabe im Quelldokument.</span>
+                {model.sourceAvailable ? (
                   <button
-                    onClick={() => onInfo(option)}
-                    aria-label={`Info ${model.supplierDisplayName}`}
+                    onClick={() => onSupplierSource(option)}
+                    aria-label={`Quelle ${model.supplierDisplayName}`}
                   >
-                    <Info size={18} />
+                    <ExternalLink size={16} /> Zur Quelle
                   </button>
-                </div>
+                ) : null}
               </div>
             );
           })}
@@ -426,8 +467,11 @@ function PositionGroup({
             <div className="lv-position-no-offers">
               <AlertTriangle size={17} />
               <span>
-                <strong>Keine Angebote gefunden</strong>
-                <small>Keine passende Angebotsposition wurde zugeordnet.</small>
+                <strong>Zuordnung prüfen</strong>
+                <small>
+                  Kein passendes Angebot wurde sicher zugeordnet. Das ist
+                  keine bestätigte Nichtabgabe.
+                </small>
               </span>
               <button onClick={onShowWarnings}>Hinweise anzeigen</button>
             </div>
@@ -503,14 +547,21 @@ export function LvPositionList({
         {sections.map((section) => {
           const isCollapsed = collapsed.has(section.id);
           return (
-            <section className="lv-list-section" key={section.id}>
+            <section
+              className="lv-list-section"
+              key={section.id}
+              data-lv-section={section.id}
+              data-collapsed={isCollapsed ? "true" : "false"}
+            >
               <button
                 className="lv-list-section-row"
                 onClick={() => onToggleSection(section.id)}
               >
                 <FolderTree size={17} />
                 <strong>{section.title}</strong>
-                <span>{section.positions.length} Positionen</span>
+                <span>
+                  {section.totalPositionCount ?? section.positions.length} Positionen
+                </span>
                 <ChevronDown size={16} className={isCollapsed ? "collapsed" : ""} />
               </button>
               {!isCollapsed

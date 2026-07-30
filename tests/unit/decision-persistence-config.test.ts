@@ -56,7 +56,7 @@ describe("decision persistence configuration", () => {
         VERCEL: "true"
       })
     ).toBe("LOCAL_ON_PREM");
-    expect(deploymentMode({ VERCEL: "1" })).toBe("VERCEL_PREVIEW");
+    expect(deploymentMode({ VERCEL: "1" })).toBe("BROWSER_LOCAL");
     expect(deploymentMode({})).toBe("LOCAL_ON_PREM");
   });
 
@@ -64,7 +64,7 @@ describe("decision persistence configuration", () => {
     const environment = {
       SPT_DEPLOYMENT_MODE: "VERCEL_PREVIEW"
     };
-    expect(decisionPersistenceMode(environment)).toBe("VERCEL_READ_ONLY");
+    expect(decisionPersistenceMode(environment)).toBe("BROWSER_LOCAL");
     expect(centralDecisionUiEnabled(environment)).toBe(false);
   });
 

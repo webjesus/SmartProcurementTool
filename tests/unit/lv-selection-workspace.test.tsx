@@ -12,7 +12,10 @@ import {
   cheapestFoundOption,
   operatorSelectedOption
 } from "@/components/lv/lv-comparison-table";
-import { LvPositionList } from "@/components/lv/lv-position-list";
+import {
+  LvPositionList,
+  derivePositionSelectionState
+} from "@/components/lv/lv-position-list";
 import {
   WarningCenter,
   buildLvWarnings
@@ -106,7 +109,8 @@ function decision(
 
 function tableMarkup(
   options: SupplierOption[],
-  decisions: CentralSupplierDecision[] = []
+  decisions: CentralSupplierDecision[] = [],
+  expanded = true
 ): string {
   const reviewed = position(options);
   const lines = new Map<string, OfferLine>(
@@ -134,7 +138,9 @@ function tableMarkup(
     createElement(LvPositionList, {
       sections: [{ id: "section", title: "Section", positions: [reviewed] }],
       collapsed: new Set<string>(),
-      expandedPositionIds: new Set([basisPosition.id]),
+      expandedPositionIds: expanded
+        ? new Set([basisPosition.id])
+        : new Set<string>(),
       offerLines: lines,
       activePositionId: null,
       drafts: [],
@@ -211,7 +217,7 @@ describe("LV operator selection table", () => {
     const markup = tableMarkup([unavailable]);
     expect(markup).not.toContain("Nicht zugeordnete Lieferanten");
     expect(markup).not.toContain("Reisser");
-    expect(markup).toContain("Keine Angebote gefunden");
+    expect(markup).toContain("Zuordnung prüfen");
     expect(markup).toContain("Hinweise anzeigen");
     expect(markup).not.toContain("data-supplier-option=");
     expect(markup).not.toContain("Auswählen");
@@ -233,6 +239,72 @@ describe("LV operator selection table", () => {
     expect(markup).toContain("Reisser");
     expect(markup).not.toContain("Keine Angebote gefunden");
     expect(markup).not.toContain("data-supplier-option=");
+  });
+
+  it("derives the five collapsed selection states without treating matching gaps as no-offer", () => {
+    expect(
+      derivePositionSelectionState({
+        selected: false,
+        selectedHasWarning: false,
+        selectableCount: 2,
+        explicitNoOfferCount: 0,
+        optionCount: 2
+      })
+    ).toBe("UNSELECTED");
+    expect(
+      derivePositionSelectionState({
+        selected: true,
+        selectedHasWarning: false,
+        selectableCount: 2,
+        explicitNoOfferCount: 0,
+        optionCount: 2
+      })
+    ).toBe("SELECTED_VALID");
+    expect(
+      derivePositionSelectionState({
+        selected: true,
+        selectedHasWarning: true,
+        selectableCount: 1,
+        explicitNoOfferCount: 0,
+        optionCount: 1
+      })
+    ).toBe("SELECTED_WITH_WARNING");
+    expect(
+      derivePositionSelectionState({
+        selected: false,
+        selectedHasWarning: false,
+        selectableCount: 0,
+        explicitNoOfferCount: 1,
+        optionCount: 1
+      })
+    ).toBe("NO_OFFER");
+    expect(
+      derivePositionSelectionState({
+        selected: false,
+        selectedHasWarning: false,
+        selectableCount: 0,
+        explicitNoOfferCount: 0,
+        optionCount: 1
+      })
+    ).toBe("MATCH_REVIEW_REQUIRED");
+  });
+
+  it("uses plain supplier text and no logo in a collapsed selected position", () => {
+    const selected = decision("option-a");
+    const markup = tableMarkup(
+      [
+        option("option-a", "Reisser", 120, {
+          technicalComparisonStatus: "CONFIRMED_COMPATIBLE"
+        })
+      ],
+      [selected],
+      false
+    );
+    expect(markup).toContain(
+      'data-position-selection-state="SELECTED_VALID"'
+    );
+    expect(markup).toContain("Reisser");
+    expect(markup).not.toContain("supplier-brand-mark");
   });
 
   it("renders one stable position container and one supplier grid", () => {
@@ -414,6 +486,8 @@ describe("LV warnings and workspace", () => {
       inspectorOpen: true,
       inspectorSection: "information",
       detailsPaneTab: "ORIGINAL_DOCUMENT",
+      fullscreenSourceOpen: true,
+      warningCenterOpen: true,
       sourceOverlay: source
     });
     expect(workspace).toEqual(
@@ -424,6 +498,8 @@ describe("LV warnings and workspace", () => {
         expandedPositionIds: [basisPosition.id],
         selectedSupplierOptionId: "option-1",
         detailsPaneTab: "ORIGINAL_DOCUMENT",
+        fullscreenSourceOpen: true,
+        warningCenterOpen: true,
         sourceOverlay: source
       })
     );
@@ -474,5 +550,9 @@ describe("supplier source sidebar", () => {
     expect(markup).toContain("POS 5000 · Art. NBKSL");
     expect(markup).toContain("46.749,72");
     expect(markup).not.toContain("1. Alternative");
+    expect(markup).toContain("100%");
+    expect(markup).toContain("Breite anpassen");
+    expect(markup).toContain('aria-label="Verkleinern"');
+    expect(markup).toContain('aria-label="Vergrößern"');
   });
 });

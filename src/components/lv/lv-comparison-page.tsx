@@ -15,8 +15,7 @@ import { useDecisionIdentity } from "@/components/decision-identity";
 import type { ProjectReviewPosition } from "@/domain/project-review";
 import {
   cheapestFoundOption,
-  latestPositionDecision,
-  type LvSection
+  latestPositionDecision
 } from "./lv-comparison-table";
 import { LvPositionList } from "./lv-position-list";
 import { LvPageHeader } from "./lv-page-header";
@@ -43,6 +42,8 @@ import type {
   SourceRecord
 } from "./types";
 import type { SourceViewState } from "./source-overlay";
+import { isAbortError } from "./async-lifecycle";
+import { paginateGroupedPositions } from "./grouped-pagination";
 
 function compareLv(left: ProjectReviewPosition, right: ProjectReviewPosition): number {
   const a = left.basis.positionNumber.match(/\d+/g)?.map(Number) ?? [];
@@ -103,7 +104,8 @@ function groupEvidenceByPage(evidence: EvidenceReference[]) {
 function sourceRecordsFor(
   pilot: PilotStateView,
   position: ProjectReviewPosition,
-  offerLines: Map<string, OfferLine>
+  offerLines: Map<string, OfferLine>,
+  documentUrls: Readonly<Record<string, string>> = {}
 ): SourceRecord[] {
   const allPositions = pilot.projectReview.positions;
   const context = contextFor(allPositions, position);
@@ -125,6 +127,7 @@ function sourceRecordsFor(
         documentId: position.basis.documentId,
         documentRevisionId: basisRevision,
         documentLabel: basisRun.document.relativePath,
+        pdfUrl: documentUrls[position.basis.documentId],
         pageNumber,
         pageCount: basisRun.document.pageCount,
         evidence,
@@ -159,6 +162,7 @@ function sourceRecordsFor(
           documentId: option.supplierDocumentId,
           documentRevisionId: revision,
           documentLabel: run.document.relativePath,
+          pdfUrl: documentUrls[option.supplierDocumentId],
           pageNumber,
           pageCount: run.document.pageCount,
           evidence,
@@ -219,12 +223,31 @@ function optionSourceKey(
 
 export function LvComparisonPage({
   pilot,
-  reload
+  reload,
+  browserLocal
 }: {
   pilot: PilotStateView;
   reload: () => Promise<void>;
+  browserLocal?: {
+    decisions: CentralSupplierDecision[];
+    documentUrls: Readonly<Record<string, string>>;
+    loadWorkspace: () => Promise<ProjectWorkspaceState | null>;
+    saveWorkspace: (state: ProjectWorkspaceState) => Promise<void>;
+    selectSupplierOption: (input: {
+      positionId: string;
+      optionId: string;
+      lineIds: string[];
+      comment: string;
+    }) => Promise<void>;
+    exportExcel?: () => void;
+    exportPdf?: () => void;
+  };
 }) {
   const identity = useDecisionIdentity();
+  const browserDecisions = browserLocal?.decisions;
+  const browserDocumentUrls = browserLocal?.documentUrls;
+  const browserLoadWorkspace = browserLocal?.loadWorkspace;
+  const browserSaveWorkspace = browserLocal?.saveWorkspace;
   const offerLines = useMemo(
     () =>
       new Map(
@@ -283,6 +306,15 @@ export function LvComparisonPage({
   const [workspaceLoaded, setWorkspaceLoaded] = useState(false);
   const projectId =
     pilot.projectReview.projectId ?? "central-server-disabled";
+
+  useEffect(() => {
+    if (!browserDecisions) return;
+    const timeout = window.setTimeout(
+      () => setCentralDecisions(browserDecisions),
+      0
+    );
+    return () => window.clearTimeout(timeout);
+  }, [browserDecisions]);
   const positions = useMemo(
     () =>
       pilot.projectReview.positions.map((position) => {
@@ -354,6 +386,11 @@ export function LvComparisonPage({
   );
 
   const loadCentralDecisions = useCallback(async () => {
+    if (browserDecisions) {
+      setCentralDecisions(browserDecisions);
+      setCentralDrafts([]);
+      return;
+    }
     if (!identity.enabled || !identity.user) return;
     const response = await fetch(
       `/api/projects/${encodeURIComponent(projectId)}/decisions`,
@@ -366,7 +403,7 @@ export function LvComparisonPage({
     };
     setCentralDecisions(payload.decisions);
     setCentralDrafts(payload.drafts);
-  }, [identity.enabled, identity.user, projectId]);
+  }, [browserDecisions, identity.enabled, identity.user, projectId]);
 
   const applyWorkspace = useCallback((state: ProjectWorkspaceState) => {
     setSearch(state.search);
@@ -381,6 +418,8 @@ export function LvComparisonPage({
     setSelectedBasisPositionId(state.selectedBasisPositionId);
     setActiveSupplierOptionId(state.selectedSupplierOptionId);
     setDetailsPaneTab(state.detailsPaneTab);
+    setFullscreenSourceOpen(state.fullscreenSourceOpen);
+    setWarningOpen(state.warningCenterOpen);
     setActivePositionId(
       state.inspectorOpen ? state.selectedBasisPositionId : null
     );
@@ -390,13 +429,36 @@ export function LvComparisonPage({
         ? {
             pageNumber: state.sourceOverlay.page,
             zoom: state.sourceOverlay.zoom,
-            fitMode: state.sourceOverlay.fitMode
+            fitMode: state.sourceOverlay.fitMode,
+            scrollLeft: state.sourceOverlay.scrollLeft,
+            scrollTop: state.sourceOverlay.scrollTop
           }
         : null
     );
   }, []);
 
   useEffect(() => {
+    if (browserLoadWorkspace) {
+      let cancelled = false;
+      void browserLoadWorkspace()
+        .then((workspace) => {
+          if (!cancelled && workspace) applyWorkspace(workspace);
+        })
+        .catch((error: unknown) => {
+          if (cancelled || isAbortError(error)) return;
+          setSelectionError(
+            error instanceof Error
+              ? error.message
+              : "Der Arbeitsbereich konnte nicht geladen werden."
+          );
+        })
+        .finally(() => {
+          if (!cancelled) setWorkspaceLoaded(true);
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
     if (!identity.enabled || !identity.user) return;
     const controller = new AbortController();
     const recoveryKey = `spt.project-workspace.${projectId}`;
@@ -429,22 +491,36 @@ export function LvComparisonPage({
           applyWorkspace(JSON.parse(recovery) as ProjectWorkspaceState);
         }
       })
-      .catch(() => {
-        if (controller.signal.aborted) return;
+      .catch((error: unknown) => {
+        if (controller.signal.aborted || isAbortError(error)) return;
         const recovery = window.localStorage.getItem(recoveryKey);
         if (recovery) {
           try {
             applyWorkspace(JSON.parse(recovery) as ProjectWorkspaceState);
+            return;
           } catch {
             // A malformed recovery copy is ignored; server state remains primary.
           }
         }
+        setSelectionError(
+          error instanceof Error
+            ? error.message
+            : "Der Arbeitsbereich konnte nicht geladen werden."
+        );
       })
       .finally(() => {
         if (!controller.signal.aborted) setWorkspaceLoaded(true);
       });
-    return () => controller.abort();
-  }, [applyWorkspace, identity.enabled, identity.user, projectId]);
+    return () => {
+      if (!controller.signal.aborted) controller.abort();
+    };
+  }, [
+    applyWorkspace,
+    browserLoadWorkspace,
+    identity.enabled,
+    identity.user,
+    projectId
+  ]);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -479,7 +555,7 @@ export function LvComparisonPage({
       ),
     [offerLines, positions]
   );
-  const visible = useMemo(() => {
+  const filteredSortedPositions = useMemo(() => {
     const normalized = search.trim().toLocaleLowerCase("de");
     const warningPositionIds = new Set(
       warnings.map((warning) => warning.positionId)
@@ -546,26 +622,23 @@ export function LvComparisonPage({
       ).sort((left, right) => left.localeCompare(right, "de")),
     [positions]
   );
-  const pageCount = Math.max(1, Math.ceil(visible.length / pageSize));
-  const currentPage = Math.min(page, pageCount);
-  const pagedVisible = useMemo(
+  const groupedPagination = useMemo(
     () =>
-      visible.slice(
-        (currentPage - 1) * pageSize,
-        currentPage * pageSize
-      ),
-    [currentPage, pageSize, visible]
+      paginateGroupedPositions({
+        positions: filteredSortedPositions,
+        collapsedSectionIds: collapsed,
+        page,
+        pageSize,
+        groupFor: sectionFor
+      }),
+    [collapsed, filteredSortedPositions, page, pageSize]
   );
-  const sections = useMemo(() => {
-    const map = new Map<string, LvSection>();
-    for (const position of pagedVisible) {
-      const section = sectionFor(position);
-      const current = map.get(section.id);
-      if (current) current.positions.push(position);
-      else map.set(section.id, { ...section, positions: [position] });
-    }
-    return [...map.values()];
-  }, [pagedVisible]);
+  const {
+    sections,
+    visiblePositions: visible,
+    currentPage,
+    allSectionIds: sectionIds
+  } = groupedPagination;
   const activePosition = positions.find(
     (position) => position.basis.id === activePositionId
   );
@@ -576,9 +649,14 @@ export function LvComparisonPage({
   const sources = useMemo(
     () =>
       sourcePosition
-        ? sourceRecordsFor(pilot, sourcePosition, offerLines)
+        ? sourceRecordsFor(
+            pilot,
+            sourcePosition,
+            offerLines,
+            browserDocumentUrls
+          )
         : [],
-    [offerLines, pilot, sourcePosition]
+    [browserDocumentUrls, offerLines, pilot, sourcePosition]
   );
   const activeSource = sources.find((source) => source.key === sourceKey);
   const detailsOption = useMemo(() => {
@@ -634,6 +712,8 @@ export function LvComparisonPage({
       inspectorSection:
         detailsPaneTab === "ORIGINAL_DOCUMENT" ? "source" : "information",
       detailsPaneTab,
+      fullscreenSourceOpen,
+      warningCenterOpen: warningOpen,
       sourceOverlay:
         sourceKey && activeSource
           ? {
@@ -641,7 +721,9 @@ export function LvComparisonPage({
               documentRevisionId: activeSource.documentRevisionId,
               page: sourceView?.pageNumber ?? activeSource.pageNumber,
               zoom: sourceView?.zoom ?? 1,
-              fitMode: sourceView?.fitMode ?? "CONTEXT"
+              fitMode: sourceView?.fitMode ?? "CONTEXT",
+              scrollLeft: sourceView?.scrollLeft ?? 0,
+              scrollTop: sourceView?.scrollTop ?? 0
             }
           : null
     }),
@@ -652,6 +734,7 @@ export function LvComparisonPage({
       collapsed,
       detailsPaneTab,
       expandedPositionIds,
+      fullscreenSourceOpen,
       currentPage,
       pageSize,
       positionFilter,
@@ -662,11 +745,27 @@ export function LvComparisonPage({
       sourceView,
       summaryFilter,
       supplier,
-      tableScroll
+      tableScroll,
+      warningOpen
     ]
   );
 
   useEffect(() => {
+    if (browserSaveWorkspace) {
+      if (!workspaceLoaded) return;
+      let cancelled = false;
+      void browserSaveWorkspace(workspaceState).catch((error: unknown) => {
+        if (cancelled || isAbortError(error)) return;
+        setSelectionError(
+          error instanceof Error
+            ? error.message
+            : "Der Arbeitsbereich konnte nicht gespeichert werden."
+        );
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
     if (
       !workspaceLoaded ||
       !identity.enabled ||
@@ -701,19 +800,30 @@ export function LvComparisonPage({
           await save(payload?.currentVersion ?? 0, false);
           return;
         }
+        if (!response.ok) {
+          throw new Error("Der Arbeitsbereich konnte nicht gespeichert werden.");
+        }
         if (response.ok && payload?.workspace) {
           workspaceVersion.current = payload.workspace.version;
         }
       };
-      void save(workspaceVersion.current, true);
+      void save(workspaceVersion.current, true).catch((error: unknown) => {
+        if (controller.signal.aborted || isAbortError(error)) return;
+        setSelectionError(
+          error instanceof Error
+            ? error.message
+            : "Der Arbeitsbereich konnte nicht gespeichert werden."
+        );
+      });
     }, 650);
     return () => {
       window.clearTimeout(timeout);
-      controller.abort();
+      if (!controller.signal.aborted) controller.abort();
     };
   }, [
     identity.enabled,
     identity.user,
+    browserSaveWorkspace,
     projectId,
     workspaceLoaded,
     workspaceState
@@ -763,7 +873,12 @@ export function LvComparisonPage({
       );
       return () => window.clearTimeout(timeout);
     }
-    const records = sourceRecordsFor(pilot, position, offerLines);
+    const records = sourceRecordsFor(
+      pilot,
+      position,
+      offerLines,
+      browserDocumentUrls
+    );
     const source = records.find(
       (record) =>
         (record.tabLabel === sourceTab ||
@@ -781,7 +896,7 @@ export function LvComparisonPage({
       );
     }, 0);
     return () => window.clearTimeout(timeout);
-  }, [offerLines, pilot, positions]);
+  }, [browserDocumentUrls, offerLines, pilot, positions]);
 
   const openPosition = useCallback((
     position: ProjectReviewPosition,
@@ -814,7 +929,12 @@ export function LvComparisonPage({
       new Set(current).add(position.basis.id)
     );
     if ((requestedTab ?? detailsPaneTab) === "ORIGINAL_DOCUMENT") {
-      const records = sourceRecordsFor(pilot, position, offerLines);
+      const records = sourceRecordsFor(
+        pilot,
+        position,
+        offerLines,
+        browserDocumentUrls
+      );
       const key = resolvedOption
         ? optionSourceKey(records, resolvedOption)
         : records.find((record) => record.kind === "basis")?.key;
@@ -824,7 +944,13 @@ export function LvComparisonPage({
     const url = new URL(window.location.href);
     url.searchParams.set("position", position.basis.positionNumber);
     window.history.replaceState({ sptInspector: true }, "", url);
-  }, [centralDecisions, detailsPaneTab, offerLines, pilot]);
+  }, [
+    browserDocumentUrls,
+    centralDecisions,
+    detailsPaneTab,
+    offerLines,
+    pilot
+  ]);
 
   const togglePosition = useCallback((position: ProjectReviewPosition) => {
     if (!expandedPositionIds.has(position.basis.id)) {
@@ -866,7 +992,12 @@ export function LvComparisonPage({
     setExpandedPositionIds((current) =>
       new Set(current).add(position.basis.id)
     );
-    const records = sourceRecordsFor(pilot, position, offerLines);
+    const records = sourceRecordsFor(
+      pilot,
+      position,
+      offerLines,
+      browserDocumentUrls
+    );
     const key = requestedKey ?? records[0]?.key;
     if (!key) return;
     setSourceKey(key);
@@ -891,7 +1022,12 @@ export function LvComparisonPage({
     position: ProjectReviewPosition,
     context: SourceOpenContext
   ) {
-    const records = sourceRecordsFor(pilot, position, offerLines);
+    const records = sourceRecordsFor(
+      pilot,
+      position,
+      offerLines,
+      browserDocumentUrls
+    );
     openSource(
       position,
       records.find((record) => record.kind === "basis")?.key,
@@ -906,7 +1042,12 @@ export function LvComparisonPage({
     context: SourceOpenContext
   ) {
     setActiveSupplierOptionId(option.id);
-    const records = sourceRecordsFor(pilot, position, offerLines);
+    const records = sourceRecordsFor(
+      pilot,
+      position,
+      offerLines,
+      browserDocumentUrls
+    );
     openSource(position, optionSourceKey(records, option, line), context);
   }
 
@@ -922,8 +1063,13 @@ export function LvComparisonPage({
     option: SupplierOption,
     comment = ""
   ) {
-    if (!identity.user || pendingOptionId) return;
-    const sourceRecords = sourceRecordsFor(pilot, position, offerLines);
+    if ((!browserLocal && !identity.user) || pendingOptionId) return;
+    const sourceRecords = sourceRecordsFor(
+      pilot,
+      position,
+      offerLines,
+      browserDocumentUrls
+    );
     if (!optionSourceKey(sourceRecords, option)) {
       setSelectionError(
         "Dieses Angebot kann nicht ausgewählt werden: Eine genaue Angebotsquelle fehlt."
@@ -933,6 +1079,22 @@ export function LvComparisonPage({
     setPendingOptionId(option.id);
     setSelectionError("");
     try {
+      if (browserLocal) {
+        await browserLocal.selectSupplierOption({
+          positionId: position.basis.id,
+          optionId: option.id,
+          lineIds: option.matchedOfferLineIds,
+          comment
+        });
+        setSelectedBasisPositionId(position.basis.id);
+        setActivePositionId(position.basis.id);
+        setActiveSupplierOptionId(option.id);
+        setExpandedPositionIds((current) =>
+          new Set(current).add(position.basis.id)
+        );
+        await reload();
+        return;
+      }
       const latest = centralDecisions
         .filter((decision) => decision.positionId === position.basis.id)
         .sort(
@@ -1011,7 +1173,6 @@ export function LvComparisonPage({
     openPosition(position, option, "OFFER_DATA");
   }
 
-  const sectionIds = sections.map((section) => section.id);
   return (
     <div className="lv-workspace" data-real-lv-workspace>
       <LvPageHeader
@@ -1019,6 +1180,8 @@ export function LvComparisonPage({
         warningOpen={warningOpen}
         onToggleWarnings={() => setWarningOpen((value) => !value)}
         onSelectWarning={openWarning}
+        onExportExcel={browserLocal?.exportExcel}
+        onExportPdf={browserLocal?.exportPdf}
       />
       <LvToolbar
         search={search}
@@ -1041,8 +1204,14 @@ export function LvComparisonPage({
           setPage(1);
         }}
         onSort={setSort}
-        onExpandAll={() => setCollapsed(new Set())}
-        onCollapseAll={() => setCollapsed(new Set(sectionIds))}
+        onExpandAll={() => {
+          setCollapsed(new Set());
+          setPage(1);
+        }}
+        onCollapseAll={() => {
+          setCollapsed(new Set(sectionIds));
+          setPage(1);
+        }}
       />
       {selectionError ? (
         <p className="lv-selection-error" role="alert">
@@ -1068,14 +1237,16 @@ export function LvComparisonPage({
           pageSize={pageSize}
           total={visible.length}
           onScrollTop={setTableScroll}
-          onToggleSection={(id) =>
+          onToggleSection={(id) => {
             setCollapsed((current) => {
               const next = new Set(current);
               if (next.has(id)) next.delete(id);
               else next.add(id);
               return next;
-            })
-          }
+            });
+            setPage(1);
+            setTableScroll(0);
+          }}
           onTogglePosition={togglePosition}
           onInfo={(position, option) => openPosition(position, option)}
           onOpenBasisSource={(position) =>
