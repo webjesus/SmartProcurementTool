@@ -20,7 +20,21 @@ import type {
   DecisionRepositories,
   DecisionRepositoryUnitOfWork
 } from "@/repositories/decision-repositories";
-import { LocalPilotPersistence } from "@/storage/document-storage";
+import {
+  LocalPilotPersistence,
+  type PilotState
+} from "@/storage/document-storage";
+
+export interface DecisionPilotStateReader {
+  read(): Promise<PilotState>;
+}
+
+function localPilotStateReader(): DecisionPilotStateReader {
+  return new LocalPilotPersistence(
+    path.resolve(/*turbopackIgnore: true*/ process.cwd(), ".data"),
+    true
+  );
+}
 
 export class DecisionInputError extends Error {
   constructor(
@@ -37,12 +51,9 @@ async function pilotContext(input: {
   projectId: string;
   positionId: string;
   analysisVersionId: string;
+  stateReader: DecisionPilotStateReader;
 }) {
-  const persistence = new LocalPilotPersistence(
-    path.resolve(/*turbopackIgnore: true*/ process.cwd(), ".data"),
-    true
-  );
-  const state = await persistence.read();
+  const state = await input.stateReader.read();
   const analysis = state.analysis;
   if (!analysis) {
     throw new DecisionInputError("PILOT_ANALYSIS_NOT_FOUND", 404);
@@ -74,12 +85,10 @@ async function pilotContext(input: {
   };
 }
 
-export async function currentDecisionProjectMetadata() {
-  const persistence = new LocalPilotPersistence(
-    path.resolve(/*turbopackIgnore: true*/ process.cwd(), ".data"),
-    true
-  );
-  const state = await persistence.read();
+export async function currentDecisionProjectMetadata(
+  stateReader: DecisionPilotStateReader = localPilotStateReader()
+) {
+  const state = await stateReader.read();
   if (!state.analysis) {
     throw new DecisionInputError("PILOT_ANALYSIS_NOT_FOUND", 404);
   }
@@ -124,14 +133,23 @@ function validateSelection(input: {
 }
 
 export class DecisionSyncService {
-  constructor(private readonly unit: DecisionRepositoryUnitOfWork) {}
+  constructor(
+    private readonly unit: DecisionRepositoryUnitOfWork,
+    private readonly stateReader: DecisionPilotStateReader =
+      localPilotStateReader()
+  ) {}
 
   async getDraft(
     projectId: string,
     positionId: string,
     analysisVersionId: string
   ) {
-    await pilotContext({ projectId, positionId, analysisVersionId });
+    await pilotContext({
+      projectId,
+      positionId,
+      analysisVersionId,
+      stateReader: this.stateReader
+    });
     return this.unit.repositories.drafts.get(projectId, positionId);
   }
 
@@ -145,7 +163,8 @@ export class DecisionSyncService {
     const context = await pilotContext({
       projectId: input.projectId,
       positionId: input.positionId,
-      analysisVersionId: input.draft.analysisVersionId
+      analysisVersionId: input.draft.analysisVersionId,
+      stateReader: this.stateReader
     });
     validateSelection({
       ...input.draft,
@@ -190,7 +209,7 @@ export class DecisionSyncService {
     expectedVersion?: number;
     actorId: string;
   }) {
-    await pilotContext(input);
+    await pilotContext({ ...input, stateReader: this.stateReader });
     return this.unit.transaction(async (repositories) => {
       const current = await repositories.drafts.get(
         input.projectId,
@@ -232,7 +251,8 @@ export class DecisionSyncService {
     const context = await pilotContext({
       projectId: input.projectId,
       positionId: input.positionId,
-      analysisVersionId: input.decision.analysisVersionId
+      analysisVersionId: input.decision.analysisVersionId,
+      stateReader: this.stateReader
     });
     const option = validateSelection({
       ...input.decision,

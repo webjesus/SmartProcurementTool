@@ -6,9 +6,16 @@ const nextBin = path.join(root, "node_modules", "next", "dist", "bin", "next");
 const playwrightCli = path.join(root, "node_modules", "@playwright", "test", "cli.js");
 const port = process.env.SPT_E2E_PORT ?? "3000";
 const baseUrl = `http://127.0.0.1:${port}`;
+const deploymentMode = process.env.SPT_DEPLOYMENT_MODE ?? "BROWSER_LOCAL";
+const devUiEnabled = process.env.DEV_UI_ENABLED ?? "true";
 const server = spawn(process.execPath, [nextBin, "start", "--hostname", "127.0.0.1"], {
   cwd: root,
-  env: { ...process.env, PORT: port },
+  env: {
+    ...process.env,
+    PORT: port,
+    SPT_DEPLOYMENT_MODE: deploymentMode,
+    DEV_UI_ENABLED: devUiEnabled
+  },
   stdio: ["ignore", "pipe", "pipe"]
 });
 
@@ -22,7 +29,7 @@ async function waitForServer() {
       throw new Error(`Next.js exited before E2E startup with code ${server.exitCode}.`);
     }
     try {
-      const response = await fetch(`${baseUrl}/api/health`);
+      const response = await fetch(`${baseUrl}/`);
       if (response.ok) return;
     } catch {
       // Startup connection failures are expected until the server is ready.
