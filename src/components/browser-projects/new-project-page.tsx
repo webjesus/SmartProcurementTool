@@ -32,6 +32,11 @@ import type {
   BrowserDocumentRecord,
   BrowserProjectRecord
 } from "@/browser-projects/types";
+import { ProjectMetadataSchema } from "@/domain/project-metadata";
+import {
+  SafePdfPreview,
+  type SafePdfPreviewValue
+} from "@/components/browser-projects/safe-pdf-preview";
 
 const documentTypeLabels: Record<BrowserDocumentRecord["documentType"], string> = {
   BASIS_LV: "Basis-LV",
@@ -57,6 +62,7 @@ const statusLabels: Record<BrowserDocumentRecord["processingStatus"], string> = 
 };
 
 const errorLabels: Record<string, string> = {
+  PROJECT_METADATA_REQUIRED: "Bitte füllen Sie alle Pflichtfelder des Projekts aus.",
   TOO_MANY_FILES: "Die maximale Anzahl Dateien wurde erreicht.",
   NOT_ENOUGH_BROWSER_STORAGE: "Nicht genügend Browserspeicher.",
   FILE_TOO_LARGE: "Eine Datei überschreitet die zulässige Größe.",
@@ -77,6 +83,9 @@ export function NewProjectPage({ limits }: { limits: BrowserUploadLimits }) {
   const initialProjectId = searchParams.get("projectId");
   const [project, setProject] = useState<BrowserProjectRecord | null>(null);
   const [name, setName] = useState("");
+  const [address, setAddress] = useState("");
+  const [engineeringOffice, setEngineeringOffice] = useState("");
+  const [architectureOffice, setArchitectureOffice] = useState("");
   const [description, setDescription] = useState("");
   const [documents, setDocuments] = useState<BrowserDocumentRecord[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -91,6 +100,8 @@ export function NewProjectPage({ limits }: { limits: BrowserUploadLimits }) {
     document: BrowserDocumentRecord;
     file: File;
   } | null>(null);
+  const [previewValue, setPreviewValue] =
+    useState<SafePdfPreviewValue | null>(null);
   const [loaded, setLoaded] = useState(!initialProjectId);
   const fileInput = useRef<HTMLInputElement>(null);
   const replaceInput = useRef<HTMLInputElement>(null);
@@ -112,6 +123,9 @@ export function NewProjectPage({ limits }: { limits: BrowserUploadLimits }) {
       }
       setProject(storedProject);
       setName(storedProject.name);
+      setAddress(storedProject.address);
+      setEngineeringOffice(storedProject.engineeringOffice);
+      setArchitectureOffice(storedProject.architectureOffice);
       setDescription(storedProject.objectDescription);
       setDocuments(storedDocuments);
       setLoaded(true);
@@ -123,15 +137,37 @@ export function NewProjectPage({ limits }: { limits: BrowserUploadLimits }) {
 
   const ensureProject = useCallback(async () => {
     if (project) return project;
-    if (!name.trim()) throw new Error("PROJECT_NAME_REQUIRED");
-    const created = await service.createProject(name, description);
+    const parsed = ProjectMetadataSchema.safeParse({
+      name,
+      address,
+      engineeringOffice,
+      architectureOffice,
+      description
+    });
+    if (!parsed.success) throw new Error("PROJECT_METADATA_REQUIRED");
+    const created = await service.createProject(parsed.data);
     setProject(created);
     router.replace(`/projects/new?projectId=${encodeURIComponent(created.projectId)}`);
     return created;
-  }, [description, name, project, router, service]);
+  }, [
+    address,
+    architectureOffice,
+    description,
+    engineeringOffice,
+    name,
+    project,
+    router,
+    service
+  ]);
 
   useEffect(() => {
-    if (!loaded || !name.trim()) return;
+    if (
+      !loaded ||
+      !name.trim() ||
+      !address.trim() ||
+      !engineeringOffice.trim() ||
+      !architectureOffice.trim()
+    ) return;
     const sequence = ++saveSequence.current;
     const timeout = window.setTimeout(() => {
       void (async () => {
@@ -139,6 +175,9 @@ export function NewProjectPage({ limits }: { limits: BrowserUploadLimits }) {
         if (sequence !== saveSequence.current) return;
         const saved = await service.updateProject(current.projectId, {
           name,
+          address,
+          engineeringOffice,
+          architectureOffice,
           objectDescription: description
         });
         if (sequence === saveSequence.current) setProject(saved);
@@ -151,7 +190,16 @@ export function NewProjectPage({ limits }: { limits: BrowserUploadLimits }) {
       );
     }, 550);
     return () => window.clearTimeout(timeout);
-  }, [description, ensureProject, loaded, name, service]);
+  }, [
+    address,
+    architectureOffice,
+    description,
+    engineeringOffice,
+    ensureProject,
+    loaded,
+    name,
+    service
+  ]);
 
   async function addFiles(fileList: FileList | readonly File[]) {
     const files = Array.from(fileList);
@@ -220,17 +268,21 @@ export function NewProjectPage({ limits }: { limits: BrowserUploadLimits }) {
     setProject(await service.getProject(project.projectId));
   }
 
-  async function preview(documentId: string) {
+  async function preview(document: BrowserDocumentRecord) {
     if (!project) return;
-    const blob = await service.getDocumentBlob(project.projectId, documentId);
+    const blob = await service.getDocumentBlob(
+      project.projectId,
+      document.documentId
+    );
     if (!blob) return;
-    const url = URL.createObjectURL(blob);
-    window.open(url, "_blank", "noopener,noreferrer");
-    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    setPreviewValue({ blob, title: document.originalFileName });
   }
 
   const ready =
     Boolean(name.trim()) &&
+    Boolean(address.trim()) &&
+    Boolean(engineeringOffice.trim()) &&
+    Boolean(architectureOffice.trim()) &&
     documents.some(
       (document) =>
         document.processingStatus === "BEREIT" ||
@@ -263,6 +315,12 @@ export function NewProjectPage({ limits }: { limits: BrowserUploadLimits }) {
         </ol>
       </header>
 
+      <aside className="browser-local-prototype-note" role="note">
+        Browserlokaler Projekt-Prototyp: Projekte und PDFs bleiben nur in
+        diesem Browser. Gemeinsame Serverprojekte folgen in einem eigenen
+        Implementierungspaket.
+      </aside>
+
       <div className="new-project-columns">
         <section className="new-project-info-card">
           <header><span>1</span><h2>Projektinformationen</h2></header>
@@ -272,7 +330,36 @@ export function NewProjectPage({ limits }: { limits: BrowserUploadLimits }) {
               value={name}
               onChange={(event) => setName(event.target.value)}
               placeholder="z. B. Neubau Verwaltungsgebäude"
+              maxLength={160}
               autoFocus
+            />
+          </label>
+          <label>
+            <span>Adresse <b>*</b></span>
+            <input
+              value={address}
+              onChange={(event) => setAddress(event.target.value)}
+              placeholder="Straße, Hausnummer, PLZ und Ort"
+              autoComplete="street-address"
+              maxLength={300}
+            />
+          </label>
+          <label>
+            <span>Ingenieurbüro <b>*</b></span>
+            <input
+              value={engineeringOffice}
+              onChange={(event) => setEngineeringOffice(event.target.value)}
+              placeholder="Name des planenden Ingenieurbüros"
+              maxLength={200}
+            />
+          </label>
+          <label>
+            <span>Architekturbüro <b>*</b></span>
+            <input
+              value={architectureOffice}
+              onChange={(event) => setArchitectureOffice(event.target.value)}
+              placeholder="Name des Architekturbüros"
+              maxLength={200}
             />
           </label>
           <label>
@@ -282,12 +369,15 @@ export function NewProjectPage({ limits }: { limits: BrowserUploadLimits }) {
               onChange={(event) => setDescription(event.target.value)}
               placeholder="z. B. Standort, Bauabschnitt, Notizen"
               rows={3}
+              maxLength={2000}
             />
           </label>
           {project ? (
             <p className="project-autosave-state"><Check size={15} /> Entwurf gespeichert</p>
+          ) : name.trim() && address.trim() && engineeringOffice.trim() && architectureOffice.trim() ? (
+            <p className="project-autosave-state"><Clock3 size={15} /> Entwurf wird gespeichert</p>
           ) : (
-            <p className="project-autosave-state"><Clock3 size={15} /> Wird nach Eingabe gespeichert</p>
+            <p className="project-autosave-state"><Clock3 size={15} /> Pflichtfelder vervollständigen</p>
           )}
         </section>
 
@@ -383,7 +473,7 @@ export function NewProjectPage({ limits }: { limits: BrowserUploadLimits }) {
                     <td>{documentTypeLabels[document.documentType]}</td>
                     <td><span className={`document-state state-${document.processingStatus.toLocaleLowerCase("de")}`}>{statusLabels[document.processingStatus]}</span></td>
                     <td>
-                      <button onClick={() => void preview(document.documentId)} aria-label="Vorschau"><Eye size={16} /></button>
+                      <button onClick={() => void preview(document)} aria-label="Vorschau"><Eye size={16} /></button>
                       <button
                         onClick={() => {
                           replacementDocumentId.current = document.documentId;
@@ -485,6 +575,13 @@ export function NewProjectPage({ limits }: { limits: BrowserUploadLimits }) {
             </footer>
           </section>
         </div>
+      ) : null}
+
+      {previewValue ? (
+        <SafePdfPreview
+          value={previewValue}
+          onClose={() => setPreviewValue(null)}
+        />
       ) : null}
     </div>
   );

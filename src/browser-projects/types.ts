@@ -1,6 +1,6 @@
 import type { PilotStateView } from "@/components/lv/types";
 
-export const BROWSER_PROJECT_SCHEMA_VERSION = 1;
+export const BROWSER_PROJECT_SCHEMA_VERSION = 2;
 
 export type BrowserProjectStatus =
   | "ENTWURF"
@@ -20,6 +20,9 @@ export type BrowserProjectRoute =
 export type BrowserProjectRecord = {
   projectId: string;
   name: string;
+  address: string;
+  engineeringOffice: string;
+  architectureOffice: string;
   objectDescription: string;
   illustrationId: string;
   createdAt: string;
@@ -37,6 +40,22 @@ export type BrowserProjectRecord = {
   processingFailureCode: "FAILED_NO_BASIS_POSITIONS" | "PROCESSING_ERROR" | null;
   activeDiscipline: BrowserDiscipline | null;
 };
+
+export function normalizeBrowserProjectRecord(
+  project: BrowserProjectRecord | (Omit<BrowserProjectRecord, "address" | "engineeringOffice" | "architectureOffice"> & {
+    address?: string;
+    engineeringOffice?: string;
+    architectureOffice?: string;
+  })
+): BrowserProjectRecord {
+  return {
+    ...project,
+    address: project.address?.trim() ?? "",
+    engineeringOffice: project.engineeringOffice?.trim() ?? "",
+    architectureOffice: project.architectureOffice?.trim() ?? "",
+    schemaVersion: BROWSER_PROJECT_SCHEMA_VERSION
+  };
+}
 
 export type BrowserDocumentType =
   | "BASIS_LV"

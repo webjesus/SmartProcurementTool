@@ -67,19 +67,6 @@ export async function inspectBrowserPdf(
       pagesWithText
     };
   } catch {
-    const text = rawPdfText(bytes);
-    const pageCount = Math.max(
-      1,
-      new TextDecoder("latin1").decode(bytes).match(/\/Type\s*\/Page\b/g)
-        ?.length ?? 0
-    );
-    return {
-      pageCount,
-      metadata: {},
-      text,
-      textLayerCharacterCount: text.replace(/\s+/g, "").length,
-      inspectedPageCount: 1,
-      pagesWithText: text.trim() ? 1 : 0
-    };
+    throw new Error("INVALID_PDF");
   }
 }

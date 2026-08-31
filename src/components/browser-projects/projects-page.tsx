@@ -87,6 +87,9 @@ export function ProjectsPage() {
   const [editProject, setEditProject] =
     useState<BrowserProjectRecord | null>(null);
   const [editName, setEditName] = useState("");
+  const [editAddress, setEditAddress] = useState("");
+  const [editEngineeringOffice, setEditEngineeringOffice] = useState("");
+  const [editArchitectureOffice, setEditArchitectureOffice] = useState("");
   const [editDescription, setEditDescription] = useState("");
   const [deleteProject, setDeleteProject] =
     useState<BrowserProjectRecord | null>(null);
@@ -121,7 +124,7 @@ export function ProjectsPage() {
     const query = search.trim().toLocaleLowerCase("de");
     return projects
       .filter((project) =>
-        `${project.name} ${project.objectDescription}`
+        `${project.name} ${project.address} ${project.engineeringOffice} ${project.architectureOffice} ${project.objectDescription}`
           .toLocaleLowerCase("de")
           .includes(query)
       )
@@ -141,18 +144,38 @@ export function ProjectsPage() {
     setOpenMenu(null);
     setEditProject(project);
     setEditName(project.name);
+    setEditAddress(project.address);
+    setEditEngineeringOffice(project.engineeringOffice);
+    setEditArchitectureOffice(project.architectureOffice);
     setEditDescription(project.objectDescription);
     window.setTimeout(() => editNameInput.current?.focus(), 0);
   }
 
   async function saveEdit() {
-    if (!editProject || !editName.trim()) return;
-    await service.updateProject(editProject.projectId, {
-      name: editName.trim(),
-      objectDescription: editDescription.trim()
-    });
-    setEditProject(null);
-    await reload();
+    if (
+      !editProject ||
+      !editName.trim() ||
+      !editAddress.trim() ||
+      !editEngineeringOffice.trim() ||
+      !editArchitectureOffice.trim()
+    ) return;
+    try {
+      await service.updateProject(editProject.projectId, {
+        name: editName,
+        address: editAddress,
+        engineeringOffice: editEngineeringOffice,
+        architectureOffice: editArchitectureOffice,
+        objectDescription: editDescription
+      });
+      setEditProject(null);
+      await reload();
+    } catch (saveError) {
+      setError(
+        saveError instanceof Error
+          ? saveError.message
+          : "Projektdaten konnten nicht gespeichert werden."
+      );
+    }
   }
 
   async function duplicate(project: BrowserProjectRecord) {
@@ -245,6 +268,12 @@ export function ProjectsPage() {
           />
         </div>
       </header>
+
+      <aside className="browser-local-prototype-note" role="note">
+        Browserlokaler Projekt-Prototyp: Diese Liste wird noch nicht zwischen
+        Arbeitsplätzen synchronisiert. Der gemeinsame Server-Speicher ist ein
+        separates MVP-Paket.
+      </aside>
 
       <div className="projects-toolbar">
         <label className="projects-search">
@@ -347,6 +376,20 @@ export function ProjectsPage() {
                 </div>
               ) : null}
             </div>
+            <dl className="project-directory-details">
+              <div>
+                <dt>Adresse</dt>
+                <dd>{project.address || "Nicht hinterlegt"}</dd>
+              </div>
+              <div>
+                <dt>Ingenieurbüro</dt>
+                <dd>{project.engineeringOffice || "Nicht hinterlegt"}</dd>
+              </div>
+              <div>
+                <dt>Architekturbüro</dt>
+                <dd>{project.architectureOffice || "Nicht hinterlegt"}</dd>
+              </div>
+            </dl>
             <dl className="project-metrics">
               <div><dt>Basis-Positionen</dt><dd>{project.basisPositionCount}</dd></div>
               <div><dt>Dokumente</dt><dd>{project.documentCount}</dd></div>
@@ -423,6 +466,7 @@ export function ProjectsPage() {
                 value={editName}
                 onChange={(event) => setEditName(event.target.value)}
                 aria-invalid={!editName.trim()}
+                maxLength={160}
               />
             </label>
             {!editName.trim() ? (
@@ -431,17 +475,50 @@ export function ProjectsPage() {
               </small>
             ) : null}
             <label>
+              Adresse
+              <input
+                value={editAddress}
+                onChange={(event) => setEditAddress(event.target.value)}
+                aria-invalid={!editAddress.trim()}
+                maxLength={300}
+              />
+            </label>
+            <label>
+              Ingenieurbüro
+              <input
+                value={editEngineeringOffice}
+                onChange={(event) => setEditEngineeringOffice(event.target.value)}
+                aria-invalid={!editEngineeringOffice.trim()}
+                maxLength={200}
+              />
+            </label>
+            <label>
+              Architekturbüro
+              <input
+                value={editArchitectureOffice}
+                onChange={(event) => setEditArchitectureOffice(event.target.value)}
+                aria-invalid={!editArchitectureOffice.trim()}
+                maxLength={200}
+              />
+            </label>
+            <label>
               Objekt / Beschreibung
               <textarea
                 value={editDescription}
                 onChange={(event) => setEditDescription(event.target.value)}
+                maxLength={2000}
               />
             </label>
             <footer>
               <button onClick={() => setEditProject(null)}>Abbrechen</button>
               <button
                 className="primary"
-                disabled={!editName.trim()}
+                disabled={
+                  !editName.trim() ||
+                  !editAddress.trim() ||
+                  !editEngineeringOffice.trim() ||
+                  !editArchitectureOffice.trim()
+                }
                 onClick={() => void saveEdit()}
               >
                 Änderungen speichern

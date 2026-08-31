@@ -8,6 +8,7 @@ import {
   useRef,
   useState
 } from "react";
+import { usePathname } from "next/navigation";
 import {
   DecisionDisplayNameSchema,
   type AuthenticatedDecisionUser
@@ -40,6 +41,14 @@ export function useDecisionIdentity(): DecisionIdentityContextValue {
   return useContext(DecisionIdentityContext);
 }
 
+export function requiresDecisionIdentity(pathname: string): boolean {
+  return (
+    pathname === "/entscheidungen" ||
+    pathname === "/lv-vergleich" ||
+    pathname.endsWith("/lv-vergleich")
+  );
+}
+
 type SessionPayload = {
   user?: AuthenticatedDecisionUser;
   message?: string;
@@ -56,8 +65,10 @@ export function DecisionIdentityProvider({
   enabled: boolean;
   children: React.ReactNode;
 }) {
+  const pathname = usePathname();
+  const active = enabled && requiresDecisionIdentity(pathname);
   const [status, setStatus] = useState<DecisionSessionStatus>(
-    enabled ? "SESSION_LOADING" : "DISABLED"
+    active ? "SESSION_LOADING" : "DISABLED"
   );
   const [user, setUser] = useState<AuthenticatedDecisionUser | null>(null);
   const [displayName, setDisplayName] = useState("");
@@ -98,16 +109,24 @@ export function DecisionIdentityProvider({
   }, []);
 
   useEffect(() => {
-    if (!enabled) return;
     const controller = new AbortController();
     const startup = window.setTimeout(() => {
+      if (!active) {
+        setStatus("DISABLED");
+        setUser(null);
+        setError("");
+        return;
+      }
+      setStatus("SESSION_LOADING");
+      setUser(null);
+      setError("");
       void loadSession(controller.signal);
     }, 0);
     return () => {
       window.clearTimeout(startup);
       controller.abort();
     };
-  }, [enabled, loadSession]);
+  }, [active, loadSession]);
 
   async function login() {
     if (pendingRef.current) return;
@@ -169,15 +188,28 @@ export function DecisionIdentityProvider({
     setError("");
     void loadSession();
   }, [loadSession]);
-  const loading = status === "SESSION_LOADING";
+  const visibleStatus: DecisionSessionStatus = !active
+    ? "DISABLED"
+    : status === "DISABLED"
+      ? "SESSION_LOADING"
+      : status;
+  const loading = visibleStatus === "SESSION_LOADING";
+  const visibleUser =
+    active && visibleStatus === "SESSION_AUTHENTICATED" ? user : null;
   const validName = DecisionDisplayNameSchema.safeParse(displayName).success;
 
   return (
     <DecisionIdentityContext.Provider
-      value={{ enabled, loading, status, user, retry }}
+      value={{
+        enabled: active,
+        loading: active && loading,
+        status: visibleStatus,
+        user: visibleUser,
+        retry
+      }}
     >
       {children}
-      {enabled && status === "SESSION_ERROR" ? (
+      {active && visibleStatus === "SESSION_ERROR" ? (
         <div className="decision-login-backdrop">
           <section
             className="decision-login"
@@ -193,7 +225,7 @@ export function DecisionIdentityProvider({
           </section>
         </div>
       ) : null}
-      {enabled && status === "NO_SESSION" ? (
+      {active && visibleStatus === "NO_SESSION" ? (
         <div className="decision-login-backdrop">
           <form
             className="decision-login"

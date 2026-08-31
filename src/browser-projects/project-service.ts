@@ -5,6 +5,7 @@ import { getBrowserProjectRepositories } from "@/browser-projects/repository-fac
 import type { ProjectRepositories } from "@/browser-projects/repositories";
 import {
   BROWSER_PROJECT_SCHEMA_VERSION,
+  normalizeBrowserProjectRecord,
   type BrowserAnalysisSnapshot,
   type BrowserDiscipline,
   type BrowserDocumentRecord,
@@ -12,12 +13,18 @@ import {
   type BrowserProjectRecord
 } from "@/browser-projects/types";
 import {
+  ProjectMetadataSchema,
+  ProjectMetadataUpdateSchema,
+  type ProjectMetadata
+} from "@/domain/project-metadata";
+import {
   applyAutomaticBasisSelection,
   classifyBrowserDocumentContent,
   isStructurallyPlausibleBasis,
   reconcileDocumentRelations
 } from "@/browser-projects/document-classification";
 import { inspectBrowserPdf } from "@/browser-projects/pdf-inspection";
+import { z } from "zod";
 
 export type BrowserUploadLimits = {
   maxFiles: number;
@@ -28,10 +35,230 @@ export type BrowserUploadLimits = {
 
 export const DEFAULT_BROWSER_UPLOAD_LIMITS: BrowserUploadLimits = {
   maxFiles: 30,
-  maxTotalBytes: 300 * 1024 * 1024,
-  maxFileBytes: 60 * 1024 * 1024,
+  maxTotalBytes: 60 * 1024 * 1024,
+  maxFileBytes: 25 * 1024 * 1024,
   maxTotalPages: 2_000
 };
+
+const MAX_BACKUP_FILE_BYTES = 90 * 1024 * 1024;
+const MAX_BACKUP_DECODED_BYTES = DEFAULT_BROWSER_UPLOAD_LIMITS.maxTotalBytes;
+const MAX_BACKUP_ANALYSES = 25;
+const MAX_BACKUP_SELECTIONS = 50_000;
+
+const nonNegativeInteger = z.number().int().nonnegative();
+const optionalString = z.string().max(2_000).nullable();
+const confidenceSchema = z.enum(["HIGH", "MEDIUM", "LOW"]);
+const projectCheckpointSchema = z
+  .object({
+    runId: z.string().min(1).max(200),
+    stage: z.enum([
+      "CLASSIFY_DOCUMENTS",
+      "EXTRACT_BASIS",
+      "EXTRACT_SUPPLIERS",
+      "NORMALIZE",
+      "MATCH",
+      "BUILD_OPTIONS",
+      "VALIDATE",
+      "FINALIZE"
+    ]),
+    completedStages: z.array(z.string().max(50)).max(8),
+    processedPages: nonNegativeInteger,
+    totalPages: nonNegativeInteger,
+    currentDocumentId: z.string().max(200).nullable(),
+    currentPage: nonNegativeInteger.nullable(),
+    interrupted: z.boolean(),
+    updatedAt: z.string().max(100)
+  })
+  .strict();
+
+const backupProjectSchema = z
+  .object({
+    projectId: z.string().min(1).max(200),
+    name: z.string().min(1).max(160),
+    address: z.string().max(300).optional().default(""),
+    engineeringOffice: z.string().max(200).optional().default(""),
+    architectureOffice: z.string().max(200).optional().default(""),
+    objectDescription: z.string().max(2_000),
+    illustrationId: z.string().min(1).max(200),
+    createdAt: z.string().max(100),
+    updatedAt: z.string().max(100),
+    lastOpenedAt: z.string().max(100),
+    lastRoute: z
+      .enum([
+        "PROJECT_DOCUMENTS",
+        "DOCUMENT_REVIEW",
+        "PROCESSING",
+        "PROCESSING_RESULT",
+        "LV_COMPARISON"
+      ])
+      .nullable(),
+    lastPositionId: z.string().max(200).nullable(),
+    status: z.enum([
+      "ENTWURF",
+      "DOKUMENTE_GELADEN",
+      "PRÜFUNG_ERFORDERLICH",
+      "IN_VERARBEITUNG",
+      "BEREIT",
+      "FEHLER"
+    ]),
+    schemaVersion: nonNegativeInteger,
+    activeAnalysisVersionId: z.string().max(200).nullable(),
+    processingCheckpoint: projectCheckpointSchema.nullable(),
+    documentCount: nonNegativeInteger,
+    basisPositionCount: nonNegativeInteger,
+    supplierOfferCount: nonNegativeInteger,
+    processingFailureCode: z
+      .enum(["FAILED_NO_BASIS_POSITIONS", "PROCESSING_ERROR"])
+      .nullable(),
+    activeDiscipline: z
+      .enum(["HEIZUNG", "SANITAER", "INSTALLATIONSSYSTEME", "MULTI", "UNKNOWN"])
+      .nullable()
+  })
+  .strict();
+
+const backupDocumentSchema = z
+  .object({
+    projectId: z.string().min(1).max(200),
+    documentId: z.string().min(1).max(200),
+    originalFileName: z.string().min(1).max(500),
+    mimeType: z.literal("application/pdf"),
+    size: z.number().int().positive(),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/u),
+    uploadedAt: z.string().max(100),
+    pageCount: z.number().int().positive(),
+    detectedDocumentType: z.string().min(1).max(100),
+    documentType: z.string().min(1).max(100),
+    discipline: z.string().min(1).max(100),
+    supplierName: optionalString,
+    offerNumber: optionalString,
+    documentVersion: optionalString,
+    revision: nonNegativeInteger.nullable(),
+    revisionOfDocumentId: optionalString,
+    relationType: z.string().min(1).max(100),
+    scanState: z.string().min(1).max(100),
+    projectName: optionalString,
+    projectNumber: optionalString,
+    lvNumber: optionalString,
+    classificationDimensions: z
+      .object({
+        documentRole: confidenceSchema,
+        supplier: confidenceSchema,
+        discipline: confidenceSchema,
+        projectIdentity: confidenceSchema,
+        offerNumber: confidenceSchema,
+        relation: confidenceSchema,
+        scanState: confidenceSchema
+      })
+      .strict(),
+    classificationSignals: z.array(z.string().max(1_000)).max(1_000),
+    textLayerCharacterCount: nonNegativeInteger,
+    preliminaryPositionCount: nonNegativeInteger,
+    activeBasis: z.boolean(),
+    excludedFromProcessing: z.boolean(),
+    manualRoleOverride: z.boolean(),
+    manualBasisOverrideConfirmed: z.boolean(),
+    classificationConfidence: confidenceSchema,
+    classificationWarnings: z.array(z.string().max(1_000)).max(1_000),
+    processingStatus: z.string().min(1).max(100)
+  })
+  .strict();
+
+const backupEnvelopeSchema = z
+  .object({
+    format: z.literal("spt-project"),
+    schemaVersion: z.union([z.literal(1), z.literal(BROWSER_PROJECT_SCHEMA_VERSION)]),
+    exportedAt: z.string().max(100),
+    manifest: z
+      .object({
+        projectId: z.string().min(1).max(200),
+        name: z.string().min(1).max(160),
+        documentCount: nonNegativeInteger,
+        basisPositionCount: nonNegativeInteger,
+        offerCount: nonNegativeInteger,
+        totalSize: nonNegativeInteger,
+        checksums: z.record(z.string().max(200), z.string().regex(/^[a-f0-9]{64}$/u))
+      })
+      .strict(),
+    project: backupProjectSchema,
+    documents: z.array(backupDocumentSchema).max(DEFAULT_BROWSER_UPLOAD_LIMITS.maxFiles),
+    documentBlobs: z
+      .array(
+        z
+          .object({
+            documentId: z.string().min(1).max(200),
+            mimeType: z.literal("application/pdf"),
+            base64: z.string().max(Math.ceil(MAX_BACKUP_DECODED_BYTES / 3) * 4)
+          })
+          .strict()
+      )
+      .max(DEFAULT_BROWSER_UPLOAD_LIMITS.maxFiles),
+    analysisSnapshots: z
+      .array(
+        z
+          .object({
+            projectId: z.string().min(1).max(200),
+            analysisVersionId: z.string().min(1).max(200),
+            createdAt: z.string().max(100),
+            pilot: z.unknown(),
+            summary: z
+              .object({
+                basisPositions: nonNegativeInteger,
+                supplierOffers: nonNegativeInteger,
+                positionsWithOffers: nonNegativeInteger,
+                positionsWithoutOffers: nonNegativeInteger,
+                warnings: nonNegativeInteger,
+                pagesInspected: nonNegativeInteger,
+                pagesParsed: nonNegativeInteger,
+                ocrRequiredPages: nonNegativeInteger
+              })
+              .strict()
+          })
+          .strict()
+      )
+      .max(MAX_BACKUP_ANALYSES),
+    selections: z
+      .array(
+        z
+          .object({
+            projectId: z.string().min(1).max(200),
+            positionId: z.string().min(1).max(200),
+            selectedSupplierOptionId: z.string().min(1).max(200),
+            selectedLineIds: z.array(z.string().min(1).max(200)).max(1_000),
+            comment: z.string().max(2_000),
+            updatedAt: z.string().max(100)
+          })
+          .strict()
+      )
+      .max(MAX_BACKUP_SELECTIONS),
+    workspace: z
+      .object({
+        projectId: z.string().min(1).max(200),
+        state: z.record(z.string().max(200), z.unknown()),
+        updatedAt: z.string().max(100)
+      })
+      .strict()
+      .nullable()
+  })
+  .strict();
+
+function assertSafeJsonTree(values: unknown[]) {
+  const stack = values.map((value) => ({ value, depth: 0 }));
+  let nodes = 0;
+  while (stack.length) {
+    const current = stack.pop()!;
+    nodes += 1;
+    if (nodes > 500_000 || current.depth > 64) {
+      throw new Error("INVALID_PROJECT_BACKUP");
+    }
+    if (!current.value || typeof current.value !== "object") continue;
+    for (const [key, child] of Object.entries(current.value)) {
+      if (key === "__proto__" || key === "prototype" || key === "constructor") {
+        throw new Error("INVALID_PROJECT_BACKUP");
+      }
+      stack.push({ value: child, depth: current.depth + 1 });
+    }
+  }
+}
 
 function id(): string {
   return crypto.randomUUID();
@@ -181,13 +408,29 @@ export class BrowserProjectService {
     return this.repositories.projects.get(projectId);
   }
 
-  async createProject(name: string, objectDescription = "") {
+  async createProject(
+    input: string | ProjectMetadata,
+    objectDescription = ""
+  ) {
+    const metadata =
+      typeof input === "string"
+        ? {
+            name: input.trim(),
+            address: "",
+            engineeringOffice: "",
+            architectureOffice: "",
+            description: objectDescription.trim()
+          }
+        : ProjectMetadataSchema.parse(input);
     const now = new Date().toISOString();
     const projectId = id();
     const project: BrowserProjectRecord = {
       projectId,
-      name: name.trim(),
-      objectDescription: objectDescription.trim(),
+      name: metadata.name,
+      address: metadata.address,
+      engineeringOffice: metadata.engineeringOffice,
+      architectureOffice: metadata.architectureOffice,
+      objectDescription: metadata.description,
       illustrationId: assignProjectIllustrationId(projectId),
       createdAt: now,
       updatedAt: now,
@@ -218,6 +461,9 @@ export class BrowserProjectService {
       Pick<
         BrowserProjectRecord,
         | "name"
+        | "address"
+        | "engineeringOffice"
+        | "architectureOffice"
         | "objectDescription"
         | "lastOpenedAt"
         | "lastRoute"
@@ -235,10 +481,30 @@ export class BrowserProjectService {
   ) {
     const current = await this.repositories.projects.get(projectId);
     if (!current) throw new Error("PROJECT_NOT_FOUND");
+    const parsedMetadata = ProjectMetadataUpdateSchema.parse({
+      ...(update.name === undefined ? {} : { name: update.name }),
+      ...(update.address === undefined ? {} : { address: update.address }),
+      ...(update.engineeringOffice === undefined
+        ? {}
+        : { engineeringOffice: update.engineeringOffice }),
+      ...(update.architectureOffice === undefined
+        ? {}
+        : { architectureOffice: update.architectureOffice }),
+      ...(update.objectDescription === undefined
+        ? {}
+        : { description: update.objectDescription })
+    });
     const next = {
       ...current,
       ...update,
-      name: update.name?.trim() ?? current.name,
+      name: parsedMetadata.name ?? current.name,
+      address: parsedMetadata.address ?? current.address,
+      engineeringOffice:
+        parsedMetadata.engineeringOffice ?? current.engineeringOffice,
+      architectureOffice:
+        parsedMetadata.architectureOffice ?? current.architectureOffice,
+      objectDescription:
+        parsedMetadata.description ?? current.objectDescription,
       updatedAt: new Date().toISOString()
     };
     if (!next.name) throw new Error("PROJECT_NAME_REQUIRED");
@@ -644,7 +910,15 @@ export class BrowserProjectService {
     const source = await this.repositories.projects.get(projectId);
     if (!source) throw new Error("PROJECT_NOT_FOUND");
     const duplicate = await this.createProject(
-      `Kopie von ${source.name}`,
+      source.address && source.engineeringOffice && source.architectureOffice
+        ? {
+            name: `Kopie von ${source.name}`,
+            address: source.address,
+            engineeringOffice: source.engineeringOffice,
+            architectureOffice: source.architectureOffice,
+            description: source.objectDescription
+          }
+        : `Kopie von ${source.name}`,
       source.objectDescription
     );
     try {
@@ -763,27 +1037,115 @@ export class BrowserProjectService {
   }
 
   async inspectBackup(file: Blob) {
-    let backup: BrowserProjectBackup;
+    if (file.size > MAX_BACKUP_FILE_BYTES) {
+      throw new Error("PROJECT_BACKUP_TOO_LARGE");
+    }
+    let rawBackup: unknown;
     try {
-      backup = JSON.parse(await file.text()) as BrowserProjectBackup;
+      rawBackup = JSON.parse(await file.text()) as unknown;
     } catch {
       throw new Error("CORRUPT_PROJECT_BACKUP");
     }
+    const parsedBackup = backupEnvelopeSchema.safeParse(rawBackup);
+    if (!parsedBackup.success) throw new Error("INVALID_PROJECT_BACKUP");
+    const backup = parsedBackup.data as BrowserProjectBackup;
+    assertSafeJsonTree([
+      ...backup.analysisSnapshots.map((snapshot) => snapshot.pilot),
+      backup.workspace?.state
+    ]);
     if (
       backup.format !== "spt-project" ||
-      backup.schemaVersion !== BROWSER_PROJECT_SCHEMA_VERSION ||
+      ![1, BROWSER_PROJECT_SCHEMA_VERSION].includes(backup.schemaVersion) ||
+      !backup.manifest ||
+      !backup.project ||
+      !Array.isArray(backup.documents) ||
+      !Array.isArray(backup.documentBlobs) ||
+      !Array.isArray(backup.analysisSnapshots) ||
+      !Array.isArray(backup.selections) ||
+      backup.documents.length > DEFAULT_BROWSER_UPLOAD_LIMITS.maxFiles ||
+      backup.analysisSnapshots.length > MAX_BACKUP_ANALYSES ||
+      backup.selections.length > MAX_BACKUP_SELECTIONS ||
       backup.documents.length !== backup.manifest.documentCount ||
       backup.documentBlobs.length !== backup.documents.length
     ) {
       throw new Error("INVALID_PROJECT_BACKUP");
     }
+    const documentIds = new Set(backup.documents.map((item) => item.documentId));
+    const blobIds = new Set(backup.documentBlobs.map((item) => item.documentId));
+    const checksumIds = Object.keys(backup.manifest.checksums ?? {});
+    if (
+      documentIds.size !== backup.documents.length ||
+      blobIds.size !== backup.documentBlobs.length ||
+      checksumIds.length !== backup.documents.length ||
+      checksumIds.some((documentId) => !documentIds.has(documentId)) ||
+      [...documentIds].some((documentId) => !blobIds.has(documentId)) ||
+      backup.project.projectId !== backup.manifest.projectId ||
+      backup.documents.some(
+        (document) =>
+          document.projectId !== backup.manifest.projectId ||
+          document.mimeType !== "application/pdf" ||
+          !Number.isSafeInteger(document.size) ||
+          document.size < 1 ||
+          typeof document.sha256 !== "string" ||
+          !/^[a-f0-9]{64}$/u.test(document.sha256)
+      ) ||
+      backup.analysisSnapshots.some(
+        (snapshot) => snapshot.projectId !== backup.manifest.projectId
+      ) ||
+      backup.selections.some(
+        (selection) => selection.projectId !== backup.manifest.projectId
+      ) ||
+      (backup.workspace !== null &&
+        backup.workspace.projectId !== backup.manifest.projectId)
+    ) {
+      throw new Error("INVALID_PROJECT_BACKUP");
+    }
+
+    let decodedSize = 0;
     for (const item of backup.documentBlobs) {
+      if (
+        item.mimeType !== "application/pdf" ||
+        typeof item.base64 !== "string" ||
+        item.base64.length > Math.ceil(MAX_BACKUP_DECODED_BYTES / 3) * 4
+      ) {
+        throw new Error("INVALID_PROJECT_BACKUP");
+      }
       const bytes = base64ToBytes(item.base64);
+      decodedSize += bytes.byteLength;
+      if (decodedSize > MAX_BACKUP_DECODED_BYTES) {
+        throw new Error("PROJECT_BACKUP_TOO_LARGE");
+      }
+      if (new TextDecoder("ascii").decode(bytes.subarray(0, 5)) !== "%PDF-") {
+        throw new Error("INVALID_PROJECT_BACKUP");
+      }
+      const document = backup.documents.find(
+        (candidate) => candidate.documentId === item.documentId
+      );
+      if (!document || document.size !== bytes.byteLength) {
+        throw new Error("INVALID_PROJECT_BACKUP");
+      }
       const buffer = Uint8Array.from(bytes).buffer;
-      if ((await sha256(buffer)) !== backup.manifest.checksums[item.documentId]) {
+      const digest = await sha256(buffer);
+      if (
+        digest !== backup.manifest.checksums[item.documentId] ||
+        digest !== document.sha256
+      ) {
         throw new Error("PROJECT_BACKUP_CHECKSUM_MISMATCH");
       }
+      try {
+        await inspectBrowserPdf(bytes);
+      } catch {
+        throw new Error("INVALID_PROJECT_BACKUP");
+      }
     }
+    if (
+      decodedSize !== backup.documents.reduce((sum, item) => sum + item.size, 0) ||
+      decodedSize !== backup.manifest.totalSize
+    ) {
+      throw new Error("INVALID_PROJECT_BACKUP");
+    }
+    backup.project = normalizeBrowserProjectRecord(backup.project);
+    backup.schemaVersion = BROWSER_PROJECT_SCHEMA_VERSION;
     return {
       backup,
       summary: {
@@ -812,7 +1174,7 @@ export class BrowserProjectService {
     const projectId = id();
     const now = new Date().toISOString();
     const project: BrowserProjectRecord = {
-      ...backup.project,
+      ...normalizeBrowserProjectRecord(backup.project),
       projectId,
       createdAt: now,
       updatedAt: now,
@@ -832,7 +1194,7 @@ export class BrowserProjectService {
         await this.repositories.documentBlobs.save({
           projectId,
           documentId: document.documentId,
-          blob: new Blob([bytes.buffer], { type: blob.mimeType })
+          blob: new Blob([bytes.buffer], { type: "application/pdf" })
         });
       }
       for (const snapshot of backup.analysisSnapshots) {
