@@ -1,60 +1,88 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  Building2,
-  Boxes,
-  CircleHelp,
-  CheckSquare2,
-  ClipboardCheck,
+  BookOpenCheck,
+  Calculator,
+  ChevronRight,
   FileOutput,
-  FileSearch,
   Files,
-  LayoutDashboard,
-  PanelLeftClose,
-  PanelLeftOpen,
+  FolderArchive,
+  FolderPlus,
+  MailPlus,
+  Menu,
+  Plus,
   Scale,
-  Settings2
+  X
 } from "lucide-react";
-import { useSyncExternalStore } from "react";
-import { ProcessingPanel } from "@/components/processing-panel";
+import { useState } from "react";
 import { useDecisionIdentity } from "@/components/decision-identity";
+import { ProcessingPanel } from "@/components/processing-panel";
+import { ThemeControl } from "@/components/theme-control";
+import {
+  GLOBAL_NAVIGATION,
+  globalNavigationItemForPath,
+  type GlobalNavigationItem
+} from "@/navigation/global-navigation";
 
-const developerNav = [
-  { href: "/", label: "Projektübersicht", icon: LayoutDashboard },
-  { href: "/dokumente", label: "Dokumente", icon: Files },
-  { href: "/gefundene-daten", label: "Gefundene Daten", icon: FileSearch },
-  { href: "/pruefung", label: "Prüfung", icon: ClipboardCheck, count: 3 },
-  { href: "/zuordnung", label: "Zuordnung", icon: Boxes, count: 2 },
-  { href: "/lv-vergleich", label: "LV-Vergleich", icon: Scale },
-  { href: "/entscheidungen", label: "Entscheidungen", icon: CheckSquare2, count: 4 },
-  { href: "/export", label: "Export", icon: FileOutput }
-];
+const icons: Record<GlobalNavigationItem["id"], typeof Files> = {
+  library: BookOpenCheck,
+  projects: Files,
+  "new-project": FolderPlus,
+  pdf: FileOutput,
+  email: MailPlus,
+  revision: FolderArchive,
+  "own-lv": Calculator
+};
 
-const liveNav = [
-  {
-    href: "/lv-vergleich",
-    label: "LV-Vergleich",
-    icon: Scale,
-    count: undefined
-  }
-];
-
-const PROJECT_SIDEBAR_KEY = "spt.browser.sidebar-expanded";
-const PROJECT_SIDEBAR_EVENT = "spt:browser-sidebar";
-
-function subscribeProjectSidebar(listener: () => void) {
-  window.addEventListener("storage", listener);
-  window.addEventListener(PROJECT_SIDEBAR_EVENT, listener);
-  return () => {
-    window.removeEventListener("storage", listener);
-    window.removeEventListener(PROJECT_SIDEBAR_EVENT, listener);
-  };
+function activeFor(pathname: string, item: GlobalNavigationItem) {
+  return globalNavigationItemForPath(pathname)?.id === item.id;
 }
 
-function projectSidebarSnapshot() {
-  return window.localStorage.getItem(PROJECT_SIDEBAR_KEY) === "true";
+function Navigation({
+  pathname,
+  close
+}: {
+  pathname: string;
+  close(): void;
+}) {
+  return (
+    <nav className="wb-navigation" aria-label="Hauptnavigation">
+      <span className="wb-nav-heading">ARBEITSBEREICH</span>
+      {GLOBAL_NAVIGATION.slice(0, 3).map((item) => {
+        const Icon = icons[item.id];
+        return (
+          <Link
+            key={item.id}
+            href={item.href}
+            className={activeFor(pathname, item) ? "active" : ""}
+            onClick={close}
+          >
+            <Icon size={18} strokeWidth={1.8} />
+            <span>{item.label}</span>
+            {item.id === "new-project" ? <Plus size={15} /> : null}
+          </Link>
+        );
+      })}
+      <span className="wb-nav-heading wb-nav-heading-tools">WERKZEUGE</span>
+      {GLOBAL_NAVIGATION.slice(3).map((item) => {
+        const Icon = icons[item.id];
+        return (
+          <Link
+            key={item.id}
+            href={item.href}
+            className={activeFor(pathname, item) ? "active" : ""}
+            onClick={close}
+          >
+            <Icon size={18} strokeWidth={1.8} />
+            <span>{item.label}</span>
+          </Link>
+        );
+      })}
+    </nav>
+  );
 }
 
 export function AppShell({
@@ -68,131 +96,123 @@ export function AppShell({
 }) {
   const pathname = usePathname();
   const identity = useDecisionIdentity();
-  const projectSidebarExpanded = useSyncExternalStore(
-    subscribeProjectSidebar,
-    projectSidebarSnapshot,
-    () => false
-  );
-  function toggleProjectSidebar() {
-    window.localStorage.setItem(
-      PROJECT_SIDEBAR_KEY,
-      String(!projectSidebarExpanded)
-    );
-    window.dispatchEvent(new Event(PROJECT_SIDEBAR_EVENT));
-  }
-  if (browserLocal && pathname.startsWith("/projects")) {
-    return (
-      <div
-        className="browser-project-frame"
-        data-sidebar-expanded={projectSidebarExpanded}
-      >
-        <aside className="browser-project-sidebar">
-          <Link href="/projects" className="browser-sidebar-logo" aria-label="Projekte">
-            <Building2 size={28} strokeWidth={1.8} />
-            <span>Smart Procurement</span>
+  const [mobileNavigation, setMobileNavigation] = useState(false);
+  const current = globalNavigationItemForPath(pathname);
+  const initials =
+    identity.user?.displayName
+      .split(/\s+/u)
+      .slice(0, 2)
+      .map((part) => part[0]?.toLocaleUpperCase("de"))
+      .join("") || "WB";
+
+  return (
+    <div className="wb-app-frame" data-mobile-nav={mobileNavigation}>
+      <aside className="wb-sidebar">
+        <div className="wb-brand-block">
+          <Link
+            href="/"
+            className="wb-brand"
+            aria-label="Weinbuch Produktbibliothek"
+          >
+            <span className="wb-brand-image">
+              <Image
+                src="/weinbuch-logo.png"
+                alt="Weinbuch Logo"
+                width={130}
+                height={45}
+                priority
+              />
+            </span>
+            <span className="wb-brand-product">
+              <strong>Smart Procurement</strong>
+              <small>TECHNICAL LEDGER</small>
+            </span>
           </Link>
           <button
             type="button"
-            className="browser-sidebar-toggle"
-            aria-label={
-              projectSidebarExpanded
-                ? "Navigation reduzieren"
-                : "Navigation erweitern"
-            }
-            aria-expanded={projectSidebarExpanded}
-            onClick={toggleProjectSidebar}
+            className="wb-mobile-close"
+            aria-label="Navigation schließen"
+            onClick={() => setMobileNavigation(false)}
           >
-            {projectSidebarExpanded ? (
-              <PanelLeftClose size={19} />
-            ) : (
-              <PanelLeftOpen size={19} />
-            )}
-            <span>
-              {projectSidebarExpanded ? "Reduzieren" : "Navigation"}
-            </span>
+            <X size={20} />
           </button>
-          <nav aria-label="Projektnavigation">
-            <Link
-              href="/projects"
-              className={pathname === "/projects" ? "active" : ""}
-              aria-label="Projekte"
-            >
-              <Files size={20} />
-              <span>Projekte</span>
-            </Link>
-            <Link href="/projects/settings" aria-label="Einstellungen">
-              <Settings2 size={20} />
-              <span>Einstellungen</span>
-            </Link>
-            <Link href="/projects/help" aria-label="Info und Hilfe">
-              <CircleHelp size={20} />
-              <span>Hilfe</span>
-            </Link>
-          </nav>
-        </aside>
-        <main className="browser-project-main">{children}</main>
-      </div>
-    );
-  }
-  const nav = devUiEnabled ? developerNav : liveNav;
-  const initials = identity.user?.displayName
-    .split(/\s+/)
-    .slice(0, 2)
-    .map((part) => part[0]?.toLocaleUpperCase("de"))
-    .join("") || "—";
-  return (
-    <div className={`app-frame ${devUiEnabled ? "dev-shell" : "live-shell"}`}>
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-mark">SPT</div>
-          <div>
-            <strong>Smart Procurement</strong>
-            <span>WEINBUCH</span>
-          </div>
         </div>
-        <div className="sidebar-project">
-          <span>AKTIVES PROJEKT</span>
-          <strong>{devUiEnabled ? "Projektansicht" : "Heizung LV-Vergleich"}</strong>
-          <small>{devUiEnabled ? "Entwicklungsmodus" : "Lokaler Arbeitsmodus"}</small>
+
+        <div className="wb-spine-label">
+          <span />
+          <p>
+            <strong>WEINBUCH WERKSTATT</strong>
+            <small>Beschaffung · Dokumente · Entscheidungen</small>
+          </p>
         </div>
-        <nav className="main-nav" aria-label="Hauptnavigation">
-          {nav.map(({ href, label, icon: Icon, count }) => {
-            const active = href === "/" ? pathname === "/" : pathname.startsWith(href);
-            return (
-              <Link key={href} href={href} className={active ? "active" : ""}>
-                <Icon size={17} strokeWidth={1.8} />
-                <span>{label}</span>
-                {count ? <b>{count}</b> : null}
-              </Link>
-            );
-          })}
-        </nav>
-        <div className="sidebar-footer">
-          <Settings2 size={17} />
-          <div>
-            <strong>Lokaler Arbeitsmodus</strong>
-            <small>Corpus bleibt auf diesem Gerät</small>
-          </div>
+
+        <Navigation
+          pathname={pathname}
+          close={() => setMobileNavigation(false)}
+        />
+
+        <div className="wb-sidebar-footer">
+          <Link href="/lv-vergleich">
+            <Scale size={17} />
+            <span>
+              <strong>LV-Arbeitsbereich</strong>
+              <small>Bestehenden Vergleich öffnen</small>
+            </span>
+            <ChevronRight size={15} />
+          </Link>
+          <p>
+            <i />
+            {browserLocal
+              ? "Browser-Testmodus · nicht produktiv"
+              : "Projekt-Prototyp · browserlokal"}
+          </p>
         </div>
       </aside>
-      <main className="main">
-        <header className="topbar">
-          <div className="breadcrumbs">
-            <span>{devUiEnabled ? "Projektansicht" : "Heizung"}</span>
-            <i>/</i>
-            <strong>{nav.find((item) => item.href === pathname)?.label ?? "Smart Procurement Tool"}</strong>
+
+      {mobileNavigation ? (
+        <button
+          type="button"
+          className="wb-mobile-backdrop"
+          aria-label="Navigation schließen"
+          onClick={() => setMobileNavigation(false)}
+        />
+      ) : null}
+
+      <main className="wb-main">
+        <header className="wb-topbar">
+          <div className="wb-topbar-context">
+            <button
+              type="button"
+              className="wb-mobile-menu"
+              aria-label="Navigation öffnen"
+              onClick={() => setMobileNavigation(true)}
+            >
+              <Menu size={20} />
+            </button>
+            <span>Smart Procurement</span>
+            <ChevronRight size={14} />
+            <strong>{current?.label ?? "Projektarbeitsbereich"}</strong>
           </div>
-          <div className="topbar-actions">
-            <span className="system-state"><i /> Systeme bereit</span>
+          <div className="wb-topbar-actions">
+            <span className="wb-build-state">
+              <i /> MVP-Arbeitsstand
+            </span>
+            <ThemeControl />
             {identity.enabled && identity.user ? (
-              <span className="decision-user-label">
-                Bearbeitet von: <strong>{identity.user.displayName}</strong>
+              <span className="wb-operator-name">
+                Bearbeitet von <strong>{identity.user.displayName}</strong>
               </span>
             ) : null}
-            <button className="avatar" aria-label="Operatorprofil">{initials}</button>
+            <button
+              type="button"
+              className="wb-avatar"
+              aria-label="Operatorprofil"
+            >
+              {initials}
+            </button>
           </div>
         </header>
-        <div className="page-content">
+        <div className="wb-page-content">
           {devUiEnabled ? <ProcessingPanel /> : null}
           {children}
         </div>
