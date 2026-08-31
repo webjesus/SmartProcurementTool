@@ -3,28 +3,7 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 const realPilot = process.env.SPT_REAL_PILOT === "true";
 
 async function authenticateAndOpen(page: Page) {
-  await page.goto("/", { waitUntil: "domcontentloaded" });
-  await page.waitForFunction(
-    () =>
-      Boolean(
-        document.querySelector(".decision-login") ||
-          document.querySelector("[data-session-login]") ||
-          document.querySelector(".project-card")
-      )
-  );
-  const login = page.locator(".decision-login, [data-session-login]").first();
-  if (await login.isVisible()) {
-    await login.getByLabel("Anzeigename").fill("LV Reference Audit");
-    await login.getByRole("button", { name: "Weiter" }).click();
-  }
-  await expect(page.locator(".project-card").first()).toBeVisible({
-    timeout: 30_000
-  });
-  await page
-    .locator(".project-card")
-    .first()
-    .getByRole("link", { name: "Öffnen" })
-    .click();
+  await page.goto("/lv-vergleich", { waitUntil: "domcontentloaded" });
   await expect(page.locator("[data-real-lv-workspace]")).toBeVisible({
     timeout: 90_000
   });

@@ -1,33 +1,16 @@
 import { expect, test, type Page } from "@playwright/test";
 
-async function authenticate(page: Page) {
-  await page.goto("/", { waitUntil: "domcontentloaded" });
-  await page.waitForFunction(
-    () =>
-      Boolean(
-        document.querySelector(".decision-login") ||
-          document.querySelector("[data-session-login]") ||
-          document.querySelector(".project-card")
-      )
-  );
-  const login = page.locator(".decision-login, [data-session-login]").first();
-  if (await login.isVisible()) {
-    await login.getByLabel("Anzeigename").fill("LV E2E Operator");
-    await login.getByRole("button", { name: "Weiter" }).click();
-  }
-}
+const realPilot = process.env.SPT_REAL_PILOT === "true";
 
 async function openProject(page: Page) {
-  await authenticate(page);
-  const project = page.locator(".project-card").first();
-  await expect(project).toBeVisible();
-  await project.getByRole("link", { name: "Öffnen" }).click();
+  await page.goto("/lv-vergleich", { waitUntil: "domcontentloaded" });
   await expect(page.locator("[data-real-lv-workspace]")).toBeVisible({
     timeout: 90_000
   });
 }
 
 test.describe("operator-driven LV two-pane workspace", () => {
+  test.skip(!realPilot, "Requires the persisted real pilot dataset.");
   test("selects by row click and restores selection, pane tab and pagination", async ({
     page
   }, testInfo) => {

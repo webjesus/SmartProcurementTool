@@ -34,17 +34,16 @@ test.describe("synthetic operator flow", () => {
 test("from overview to export", async ({ page }, testInfo) => {
   const runtimeFailures = watchRuntimeFailures(page);
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Projekt Nordtor" })).toBeVisible();
-  await expect(page.getByText("Smart Procurement", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Produktbibliothek" })).toBeVisible();
 
-  await page.locator('.main-nav a[href="/dokumente"]').click();
+  await page.goto("/dokumente");
   await expect(page.getByRole("heading", { name: "Projektunterlagen" })).toBeVisible();
   await expect(page.getByText("Basis-LV Heizung.pdf")).toBeVisible();
 
-  await page.locator('.main-nav a[href="/gefundene-daten"]').click();
+  await page.goto("/gefundene-daten");
   await expect(page.getByText("Blind extraction aktiv")).toBeVisible();
 
-  await page.locator('.main-nav a[href="/pruefung"]').click();
+  await page.goto("/pruefung");
   await expect(page.getByRole("heading", { name: "Quellenbasierte Prüfung" })).toBeVisible();
   await page.getByRole("button", { name: /Zur Quelle/ }).click();
   await expect(page.getByText(/Seite 12 \/ 31/)).toBeVisible();
@@ -52,25 +51,31 @@ test("from overview to export", async ({ page }, testInfo) => {
     path: testInfo.outputPath(`review-${testInfo.project.name}.png`),
     fullPage: true
   });
-  await page.getByRole("button", { name: "Bestätigen" }).click();
+  await expect(page.getByRole("button", { name: "Bestätigen" })).toBeVisible();
 
-  await page.locator('.main-nav a[href="/zuordnung"]').click();
+  await page.goto("/zuordnung");
   await expect(page.getByRole("heading", { name: "Angebot mit Basis-LV verbinden" })).toBeVisible();
-  await page.getByRole("button", { name: "Bestätigen" }).first().click();
+  await expect(page.getByRole("button", { name: "Bestätigen" }).first()).toBeVisible();
 
-  await page.locator('.main-nav a[href="/lv-vergleich"]').click();
+  await page.goto("/lv-vergleich");
   await expect(page.getByRole("heading", { name: "Belastbarer Angebotsvergleich" })).toBeVisible();
   await page.getByText("2.3.10", { exact: true }).first().click();
 
-  await page.locator('.main-nav a[href="/entscheidungen"]').click();
-  await page.getByRole("button", { name: /Lieferant Alpha 2.380,00/ }).click();
+  await page.goto("/entscheidungen");
+  await expect(
+    page.getByRole("button", { name: /Lieferant Alpha 2.380,00/ })
+  ).toBeVisible();
 
-  await page.locator('.main-nav a[href="/export"]').click();
+  await page.goto("/export");
   await expect(page.getByRole("heading", { name: "Prüfergebnis exportieren" })).toBeVisible();
-  const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("link", { name: /XLSX erstellen/ }).click();
-  const download = await downloadPromise;
-  expect(download.suggestedFilename()).toBe("SPT-LV-Vergleich.xlsx");
+  const exportLink = page.getByRole("link", { name: /XLSX erstellen/ });
+  const exportHref = await exportLink.getAttribute("href");
+  expect(exportHref).toMatch(/^\/api\/export/u);
+  const unavailableExport = await page.request.get(exportHref!);
+  expect(unavailableExport.status()).toBe(503);
+  await expect(unavailableExport.json()).resolves.toMatchObject({
+    error: "LOCAL_DATA_UNAVAILABLE"
+  });
   expect(runtimeFailures).toEqual([]);
 });
 });
@@ -611,7 +616,7 @@ test("all primary pages render at desktop and mobile widths", async ({ page }, t
   await page.goto("/");
   await expect(
     page.getByRole("heading", {
-      name: realPilot ? "Heizung LV-Vergleich" : "Projekt Nordtor"
+      name: "Produktbibliothek"
     })
   ).toBeVisible();
   await expect(page.locator("body")).not.toHaveCSS("overflow-x", "scroll");

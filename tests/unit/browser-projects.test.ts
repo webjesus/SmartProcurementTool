@@ -32,12 +32,35 @@ function createService() {
 }
 
 function pdf(name: string, lines: string[] = []) {
-  const body = `%PDF-1.4
-1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
-2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
-3 0 obj << /Type /Page /Parent 2 0 R >> endobj
-${lines.map((line) => `(${line}) Tj`).join("\n")}
-%%EOF`;
+  const escapedLines = lines.map((line) => line.replace(/([()\\])/g, "\\$1"));
+  const stream = [
+    "BT",
+    "/F1 11 Tf",
+    "46 790 Td",
+    ...escapedLines.flatMap((line, index) =>
+      index === 0 ? [`(${line}) Tj`] : ["0 -18 Td", `(${line}) Tj`]
+    ),
+    "ET"
+  ].join("\n");
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+    `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}\nendstream`,
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
+  ];
+  let body = "%PDF-1.4\n";
+  const offsets = [0];
+  objects.forEach((object, index) => {
+    offsets.push(Buffer.byteLength(body));
+    body += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  });
+  const xref = Buffer.byteLength(body);
+  body += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  offsets.slice(1).forEach((offset) => {
+    body += `${String(offset).padStart(10, "0")} 00000 n \n`;
+  });
+  body += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
   return new File([body], name, { type: "application/pdf" });
 }
 
@@ -52,6 +75,26 @@ afterEach(() => {
 });
 
 describe("browser-local project repositories", () => {
+  it("persists the complete project-directory metadata", async () => {
+    const { service } = createService();
+    const project = await service.createProject({
+      name: "Musterprojekt",
+      address: "Musterstraße 1, 70173 Stuttgart",
+      engineeringOffice: "Ingenieurbüro Muster",
+      architectureOffice: "Architektur Muster",
+      description: "Sanitär und Heizung"
+    });
+
+    expect(await service.getProject(project.projectId)).toMatchObject({
+      name: "Musterprojekt",
+      address: "Musterstraße 1, 70173 Stuttgart",
+      engineeringOffice: "Ingenieurbüro Muster",
+      architectureOffice: "Architektur Muster",
+      objectDescription: "Sanitär und Heizung"
+    });
+    expect(await service.listProjects()).toHaveLength(1);
+  });
+
   it("creates, autosaves, renames and keeps a stable illustration", async () => {
     const { service } = createService();
     const project = await service.createProject("Projekt A", "Haus 1");
@@ -242,6 +285,47 @@ describe("browser-local project repositories", () => {
     await expect(
       service.restoreProject(new Blob(["not-json"]))
     ).rejects.toThrow("CORRUPT_PROJECT_BACKUP");
+  });
+
+  it("rejects non-PDF backup blobs even when their checksum is valid", async () => {
+    const { service } = createService();
+    const source = await service.createProject("Backup");
+    await service.addFiles(source.projectId, [pdf("basis-lv.pdf")]);
+    const valid = JSON.parse(await (await service.backupProject(source.projectId)).text());
+    valid.documentBlobs[0].mimeType = "text/html";
+
+    await expect(
+      service.inspectBackup(new Blob([JSON.stringify(valid)]))
+    ).rejects.toThrow("INVALID_PROJECT_BACKUP");
+  });
+
+  it("rejects duplicate document links in a backup", async () => {
+    const { service } = createService();
+    const source = await service.createProject("Backup");
+    await service.addFiles(source.projectId, [pdf("basis-lv.pdf")]);
+    const valid = JSON.parse(await (await service.backupProject(source.projectId)).text());
+    valid.documents.push(valid.documents[0]);
+    valid.documentBlobs.push(valid.documentBlobs[0]);
+    valid.manifest.documentCount = 2;
+
+    await expect(
+      service.inspectBackup(new Blob([JSON.stringify(valid)]))
+    ).rejects.toThrow("INVALID_PROJECT_BACKUP");
+  });
+
+  it("rejects malformed files that only imitate the PDF header", async () => {
+    const { service } = createService();
+    const source = await service.createProject("Malformed");
+    const result = await service.addFiles(source.projectId, [
+      new File(["%PDF-not-a-real-pdf"], "broken.pdf", {
+        type: "application/pdf"
+      })
+    ]);
+
+    expect(result.items).toMatchObject([
+      { status: "REJECTED", message: "INVALID_PDF" }
+    ]);
+    expect(await service.listDocuments(source.projectId)).toEqual([]);
   });
 
   it("creates the complete migrated IndexedDB schema", async () => {

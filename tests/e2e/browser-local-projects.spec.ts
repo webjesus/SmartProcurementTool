@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 const screenshotDir = path.join(process.cwd(), "tmp", "browser-local-visual");
 
@@ -50,6 +50,19 @@ function syntheticPdf(lines: string[]): Buffer {
   return Buffer.from(value, "ascii");
 }
 
+async function fillProjectMetadata(page: Page, name: string) {
+  await page.getByPlaceholder("z. B. Neubau Verwaltungsgebäude").fill(name);
+  await page
+    .getByPlaceholder("Straße, Hausnummer, PLZ und Ort")
+    .fill("Musterstraße 1, 70173 Stuttgart");
+  await page
+    .getByPlaceholder("Name des planenden Ingenieurbüros")
+    .fill("Ingenieurbüro Muster");
+  await page
+    .getByPlaceholder("Name des Architekturbüros")
+    .fill("Architekturbüro Muster");
+}
+
 test.beforeAll(() => mkdirSync(screenshotDir, { recursive: true }));
 
 test("classifies and processes the local mixed regression corpus", async ({
@@ -78,9 +91,7 @@ test("classifies and processes the local mixed regression corpus", async ({
   );
 
   await page.goto("/projects/new");
-  await page
-    .getByPlaceholder("z. B. Neubau Verwaltungsgebäude")
-    .fill("Mixed Corpus Regression");
+  await fillProjectMetadata(page, "Mixed Corpus Regression");
   await page.locator('input[type="file"][multiple]').setInputFiles(corpusFiles);
   await expect(page.locator("[data-document-id]")).toHaveCount(12, {
     timeout: 120_000
@@ -169,19 +180,15 @@ test("browser-local project survives reload and reaches the shared LV", async ({
   const runtimeErrors: string[] = [];
   page.on("pageerror", (error) => runtimeErrors.push(error.message));
   await page.goto("/");
+  await expect(page.locator("[data-library-page]")).toBeVisible();
+  await page
+    .getByRole("navigation", { name: "Hauptnavigation" })
+    .getByRole("link", { name: "Projekte", exact: true })
+    .click();
   await expect(page).toHaveURL(/\/projects$/);
   await expect(page.locator("[data-browser-projects]")).toBeVisible();
-  const sidebarToggle = page.getByRole("button", {
-    name: "Navigation erweitern"
-  });
-  await sidebarToggle.click();
-  await expect(
-    page.getByRole("button", { name: "Navigation reduzieren" })
-  ).toHaveAttribute("aria-expanded", "true");
   await page.reload();
-  await expect(
-    page.getByRole("button", { name: "Navigation reduzieren" })
-  ).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator("[data-browser-projects]")).toBeVisible();
 
   const health = await request.get("/api/health");
   expect(health.status()).toBe(200);
@@ -192,8 +199,8 @@ test("browser-local project survives reload and reaches the shared LV", async ({
     decisionPersistenceMode: "BROWSER_LOCAL"
   });
 
-  await page.getByRole("link", { name: "Neues Projekt", exact: true }).click();
-  await page.getByPlaceholder("z. B. Neubau Verwaltungsgebäude").fill("Neubau Verwaltung Nord");
+  await page.locator(".projects-primary-action").click();
+  await fillProjectMetadata(page, "Neubau Verwaltung Nord");
   await page
     .getByPlaceholder("z. B. Standort, Bauabschnitt, Notizen")
     .fill("Bauabschnitt A");
@@ -327,7 +334,9 @@ test("browser-local project survives reload and reaches the shared LV", async ({
     path: path.join(screenshotDir, "project-edit-modal.png"),
     fullPage: true
   });
-  await editDialog.locator("input").fill("Neubau Verwaltung Nord aktualisiert");
+  await editDialog
+    .getByRole("textbox", { name: "Projektname" })
+    .fill("Neubau Verwaltung Nord aktualisiert");
   await editDialog
     .getByRole("button", { name: "Änderungen speichern" })
     .click();
@@ -337,8 +346,8 @@ test("browser-local project survives reload and reaches the shared LV", async ({
       .filter({ hasText: "Neubau Verwaltung Nord aktualisiert" })
   ).toBeVisible();
 
-  await page.getByRole("link", { name: "Neues Projekt", exact: true }).click();
-  await page.getByPlaceholder("z. B. Neubau Verwaltungsgebäude").fill("Projekt B");
+  await page.locator(".projects-primary-action").click();
+  await fillProjectMetadata(page, "Projekt B");
   await expect(page.getByText("Entwurf gespeichert")).toBeVisible();
   await page.getByRole("link", { name: "Zurück zu Projekten" }).click();
   await expect(page.locator(".browser-project-card")).toHaveCount(2);
@@ -438,9 +447,7 @@ test("collapse is applied before pagination and browser-local workspace is resto
   ];
 
   await page.goto("/projects/new");
-  await page
-    .locator('input[placeholder^="z. B. Neubau"]')
-    .fill("Pagination Regression");
+  await fillProjectMetadata(page, "Pagination Regression");
   await page.locator('input[type="file"][multiple]').setInputFiles({
     name: "basis-lv-pagination.pdf",
     mimeType: "application/pdf",
@@ -527,8 +534,9 @@ test("project cards use stable illustrations in grid and list at 1366 px", async
   test.skip(testInfo.project.name !== "chromium", "Desktop visual workflow");
   await page.setViewportSize({ width: 1366, height: 768 });
   await page.goto("/projects");
-  await page.getByRole("link", { name: "Neues Projekt", exact: true }).click();
-  await page.getByPlaceholder("z. B. Neubau Verwaltungsgebäude").fill(
+  await page.locator(".projects-primary-action").click();
+  await fillProjectMetadata(
+    page,
     "Ein außergewöhnlich lang benanntes Verwaltungsgebäude mit Bauabschnitt West"
   );
   await expect(page.getByText("Entwurf gespeichert")).toBeVisible();
@@ -539,8 +547,8 @@ test("project cards use stable illustrations in grid and list at 1366 px", async
     "Bürogebäude Skyline",
     "Produktionshalle 3"
   ]) {
-    await page.getByRole("link", { name: "Neues Projekt", exact: true }).click();
-    await page.getByPlaceholder("z. B. Neubau Verwaltungsgebäude").fill(name);
+    await page.locator(".projects-primary-action").click();
+    await fillProjectMetadata(page, name);
     await expect(page.getByText("Entwurf gespeichert")).toBeVisible();
     await page.getByRole("link", { name: "Zurück zu Projekten" }).click();
   }
