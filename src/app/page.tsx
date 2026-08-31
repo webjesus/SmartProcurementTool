@@ -1,8 +1,5 @@
-import { redirect } from "next/navigation";
-import { ProjectStartPage } from "@/components/project-start-page";
-import { isBrowserLocal } from "@/services/deployment-profile";
+import { ProductLibraryPage } from "@/components/library/product-library-page";
 
-export default function OverviewPage() {
-  if (isBrowserLocal()) redirect("/projects");
-  return <ProjectStartPage />;
+export default function ProductLibraryRoute() {
+  return <ProductLibraryPage initialProducts={[]} />;
 }
