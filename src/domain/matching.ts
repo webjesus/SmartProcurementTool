@@ -80,13 +80,22 @@ export function normalizeLvPositionReference(
     .replace(/[.,;:]+$/g, "")
     .replace(/[–—]/g, "-");
   if (!compact) return null;
-  const numbers = compact.match(/\d+/g)?.map(Number) ?? [];
-  if (![3, 4, 6].includes(numbers.length)) return null;
-  const start = numbers.slice(0, 3).join(".");
-  if (numbers.length === 3) return start;
-  const end =
-    numbers.length === 4 ? String(numbers[3]) : numbers.slice(3, 6).join(".");
-  return `${start}-${end}`;
+  // Hierarchy and ranges are different syntax. Never turn arbitrary digits in
+  // article text, or a fourth hierarchy level, into a range.
+  const valueWithDots = /^\d+-\d+-\d+$/.test(compact)
+    ? compact.replace(/-/g, ".")
+    : compact.replace(/\s*\.\s*/g, ".").replace(/(?<=\d)\s+(?=\d)/g, ".");
+  if (!/^\d+(?:\.\d+){1,7}(?:\s*-\s*\d+(?:\.\d+)*)?$/.test(valueWithDots)) return null;
+  const [left, right] = valueWithDots.split(/\s*-\s*/);
+  const startParts = left.split(".").map(Number);
+  if (startParts.some(number => !Number.isSafeInteger(number))) return null;
+  const start = startParts.join(".");
+  if (!right) return start;
+  const endParts = right.split(".").map(Number);
+  if (endParts.some(number => !Number.isSafeInteger(number))) return null;
+  if (endParts.length > 1 && (endParts.length !== startParts.length ||
+    endParts.slice(0, -1).join(".") !== startParts.slice(0, -1).join("."))) return null;
+  return `${start}-${endParts.at(-1)}`;
 }
 
 function parsePositionReference(
@@ -119,11 +128,13 @@ function positionReferenceMatches(
 }
 
 function samePosition(basis: BasisPosition, offer: OfferLine) {
-  return [offer.sourcePositionNumber, offer.supplierPositionNumber]
+  return offerPositionReferences(offer)
     .some((value) => positionReferenceMatches(basis.positionNumber, value));
 }
 
 function offerPositionReferences(offer: OfferLine): string[] {
+  const explicit = normalizeLvPositionReference(offer.sourcePositionNumber);
+  if (explicit) return [explicit];
   return Array.from(
     new Set(
       [offer.sourcePositionNumber, offer.supplierPositionNumber]
@@ -327,6 +338,12 @@ export function scoreMatch(basis: BasisPosition, offer: OfferLine): {
   const descriptionScore = tokenSimilarity(basis.description, offer.description);
   let score = descriptionScore * 0.42;
 
+  const requiredArticle = basis.description.match(/\b(?:Art\.?\s*-?\s*Nr\.?|Artikelnummer)\s*:?\s*([\p{L}\p{N}][\p{L}\p{N}._/-]{3,})/iu)?.[1];
+  if (requiredArticle && offer.articleNumber && normalize(requiredArticle) === normalize(offer.articleNumber)) {
+    score += 0.62;
+    reasons.push("Artikelnummer stimmt exakt überein");
+  }
+
   if (samePosition(basis, offer)) {
     score += 0.34;
     reasons.push("Direkter LV-Positionsbezug");
@@ -489,6 +506,9 @@ function anchoredBundle(
   anchor: OfferLineContext,
   contexts: OfferLineContext[]
 ): OfferLineContext[] {
+  // A text/article candidate has no position boundary that could justify
+  // swallowing every following unnumbered product in the document.
+  if (!samePosition(basis, anchor.line)) return [anchor];
   const supplier = contexts.filter(
     (context) => context.documentId === anchor.documentId
   );
@@ -670,6 +690,10 @@ export function matchConstraints(
     pricedScope.find(
       (line) => line.role === "PRIMARY" && samePosition(basis, line)
     ) ?? pricedScope.find((line) => line.role === "PRIMARY");
+  // The attributes and supplied materials must describe the same package as
+  // its price. A separate alternative/optional line cannot prove the main
+  // product compatible or complete, and its unit must not invalidate it.
+  const comparisonScope = primary ? pricedScope : candidateScope;
   const quantityLines = primary
     ? [
         primary,
@@ -690,23 +714,23 @@ export function matchConstraints(
     quantityLines.length > 0 &&
     quantityLines.every(
       (line) =>
-        line.quantity === null ||
+        line.quantity !== null &&
         Math.abs(line.quantity - basis.quantity!) <=
           Math.max(0.001, basis.quantity! * 0.01)
     );
   const unitCompatible =
     basis.unit !== null &&
-    candidateScope.length > 0 &&
-    candidateScope.every(
+    comparisonScope.length > 0 &&
+    comparisonScope.every(
       (line) =>
-        line.unit === null ||
+        line.unit !== null &&
         canonicalUnit(line.unit) === canonicalUnit(basis.unit)
     );
-  const combinedDescription = candidateScope
+  const combinedDescription = comparisonScope
     .map((line) => line.description)
     .join(" ");
   const supplierManufacturers = Array.from(
-    new Set(candidateScope.map((line) => line.manufacturer).filter(Boolean))
+    new Set(comparisonScope.map((line) => line.manufacturer).filter(Boolean))
   ) as string[];
   const productIdentityConfirmed = exactProductIdentityConfirmed(
     basis,
@@ -733,6 +757,7 @@ export function matchConstraints(
         );
   const manufacturerMismatch =
     basis.manufacturerRequirements.length > 0 &&
+    supplierManufacturers.length > 0 &&
     !manufacturerRequirementMatches(
       basis.manufacturerRequirements,
       supplierManufacturers
@@ -745,6 +770,8 @@ export function matchConstraints(
   const technicalComparisonStatus: TechnicalComparisonStatus =
     technicalDeviations.length > 0
       ? "CONFIRMED_DEVIATION"
+      : basis.manufacturerRequirements.length > 0 && supplierManufacturers.length === 0
+        ? "UNRESOLVED"
       : basis.technicalAttributes.length === 0 ||
           productIdentityConfirmed ||
           attributeComparisons.every(({ result }) => result === "MATCH")
@@ -794,15 +821,14 @@ export function matchConstraints(
         ["OPTIONAL", "ALTERNATIVE"].includes(line.role)
       )) &&
     (() => {
-      const directPrimaryLines = pricedScope.filter(
-        (line) => line.role === "PRIMARY" && samePosition(basis, line)
+      const primaryLines = pricedScope.filter(
+        (line) => line.role === "PRIMARY"
       );
-      return (
-        directPrimaryLines.length <= 1 ||
-        directPrimaryLines.every(
-          (line) => line.groupId === directPrimaryLines[0]?.groupId
-        )
-      );
+      // A document-level group is not proof that two main products form one
+      // required package, even if a following product has no LV reference.
+      // Keep its source visible, but require explicit component roles before
+      // using the inferred bundle in a price comparison.
+      return primaryLines.length <= 1;
     })();
   const basisEvidenceComplete =
     basis.quantity !== null &&
@@ -850,7 +876,7 @@ export function matchConstraints(
   if (!basisEvidenceComplete) {
     reasons.push(
       hasUnresolvedBasisReference(basis)
-        ? "Referenzierte Ausführungsbeschreibung ist im Pilotumfang nicht vollständig aufgelöst"
+        ? "Referenzierte Ausführungsbeschreibung ist nicht vollständig aufgelöst"
         : "Basis-Extraktion ist für Menge, Einheit oder Evidence unvollständig"
     );
   } else if (!evidenceSufficient) {
@@ -1059,8 +1085,12 @@ export function buildSupplierOptions(input: {
           link.basisPositionIds.includes(basis.id) &&
           link.offerLineIds.some((id) => supplierLineIds.has(id))
       );
+      const activeLinks = links.filter(link => link.status !== "UNMATCHED");
+      // Preserve rejected-only source rows for inspection/undo, but never add
+      // them to the amount of a separately accepted product.
+      const sourceLinks = activeLinks.length > 0 ? activeLinks : links;
       const lineIds = Array.from(
-        new Set(links.flatMap((link) => link.offerLineIds).filter((id) => supplierLineIds.has(id)))
+        new Set(sourceLinks.flatMap((link) => link.offerLineIds).filter((id) => supplierLineIds.has(id)))
       );
       const contexts = eligibleOffers.filter((offer) =>
         lineIds.includes(offer.line.id)
@@ -1076,9 +1106,10 @@ export function buildSupplierOptions(input: {
         input.fullyProcessedSupplierDocumentIds?.has(supplier.id)
           ? "COVERED_WITHOUT_OFFER"
           : detectedAvailability;
-      const primary = lines.find(
-        (line) => line.role === "PRIMARY" && samePosition(basis, line)
-      );
+      const primary =
+        lines.find(
+          (line) => line.role === "PRIMARY" && samePosition(basis, line)
+        ) ?? lines.find((line) => line.role === "PRIMARY");
       const mandatory = lines.filter(
         (line) =>
           [
@@ -1130,17 +1161,20 @@ export function buildSupplierOptions(input: {
             line.verificationStatus
           )
         );
-      const matchingAccepted = links.some(
+      const matchingAccepted = activeLinks.length > 0 && activeLinks.every(
         (link) => link.confirmedByOperator
       );
       const matchingReliable =
         availability === "COVERED_WITHOUT_OFFER" ||
-        links.some(
+        (activeLinks.length > 0 && activeLinks.every(
           (link) =>
             link.confirmedByOperator ||
             (link.reasons.includes("Direkter LV-Positionsbezug") &&
+              (lines.some(line => link.offerLineIds.includes(line.id) && scoreMatch(basis, line).reasons.some(reason =>
+                ["Beschreibung ist inhaltlich ähnlich", "Artikelnummer stimmt exakt überein"].includes(reason))) ||
+                link.status === "NOT_OFFERED") &&
               ["EXACT", "ALTERNATIVE", "NOT_OFFERED"].includes(link.status))
-        );
+        ));
       const pricedTotalRaw =
         primaryPrice !== null &&
         mandatoryComponentPrices.length === mandatory.length &&
@@ -1368,11 +1402,25 @@ export function refreshPilotAnalysisForPositions(
   const affected = new Set(basisPositionIds);
   const supplierOptions = analysis.supplierOptions.map((option) => {
     if (!option.basisPositionIds.some((id) => affected.has(id))) return option;
-    const matchingAccepted = option.matchLinkIds.some(
-      (linkId) =>
-        analysis.matchLinks.find((link) => link.id === linkId)?.confirmedByOperator
-    );
-    const withoutStatus = { ...option, matchingAccepted };
+    const links = analysis.matchLinks.filter(link => option.matchLinkIds.includes(link.id));
+    const activeLinks = links.filter(link => link.status !== "UNMATCHED");
+    const matchingAccepted = activeLinks.length > 0 && activeLinks.every(link => link.confirmedByOperator);
+    const hasRejection = activeLinks.length !== links.length;
+    const matchingReliable = !hasRejection && activeLinks.length > 0 &&
+      activeLinks.every(link => link.confirmedByOperator || (option.matchingReliable && ["EXACT", "ALTERNATIVE", "NOT_OFFERED"].includes(link.status)));
+    const scope = materialScopeStatus({
+      availability: option.offerAvailability, pricedTotal: option.pricedTotal,
+      quantityCompatible: option.quantityCompatible, unitCompatible: option.unitCompatible,
+      technicalCompatible: option.technicalCompatible, technicalComparisonStatus: option.technicalComparisonStatus,
+      requiredScopeComplete: option.requiredScopeComplete, missingComponents: option.missingComponents,
+      optionalSeparated: option.optionalSeparated, bundleCompatible: !hasRejection && (option.bundleCompatible ?? false),
+      evidenceSufficient: option.evidenceSufficient, extractionValidated: option.extractionValidated,
+      matchingAccepted, matchingReliable
+    });
+    // This path has no raw lines to rebuild a changed bundle. Invalidate its
+    // comparison until the full analysis path recomposes the accepted scope.
+    const withoutStatus = { ...option, matchingAccepted, matchingReliable, materialScopeStatus: scope,
+      comparableTotal: scope === "COMPLETE_MATERIAL_SCOPE" && !hasRejection ? option.pricedTotal : null };
     return { ...withoutStatus, status: optionStatus(withoutStatus) };
   });
   const recalculated = new Map(

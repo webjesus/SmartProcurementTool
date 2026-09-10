@@ -89,6 +89,7 @@ export type BrowserRelationType =
 export type BrowserScanState =
   | "TEXT_AVAILABLE"
   | "PARTIAL_TEXT"
+  | "OCR_AVAILABLE"
   | "OCR_REQUIRED";
 
 export type BrowserDocumentStatus =
@@ -136,6 +137,11 @@ export type BrowserDocumentRecord = {
   classificationDimensions: BrowserClassificationDimensions;
   classificationSignals: string[];
   textLayerCharacterCount: number;
+  ocrProcessedAt?: string | null;
+  ocrSampledPages?: number;
+  ocrMeanConfidence?: number | null;
+  ocrEngineVersion?: string | null;
+  ocrModelVersion?: string | null;
   preliminaryPositionCount: number;
   activeBasis: boolean;
   excludedFromProcessing: boolean;
@@ -189,6 +195,18 @@ export type BrowserAnalysisSnapshot = {
   projectId: string;
   analysisVersionId: string;
   createdAt: string;
+  /** Root machine-generated analysis kept immutable for manual correction replay. */
+  derivedFromAnalysisVersionId?: string | null;
+  manualCorrectionRevision?: number;
+  /** Selections from a superseded analysis, retained but never applied to a new extraction. */
+  archivedSelections?: BrowserSelectionRecord[];
+  manualCorrections?: import("@/browser-projects/manual-corrections").BrowserManualCorrectionRecord[];
+  manualDisplayLabels?: Record<string, string>;
+  manualEvidenceStatusByEntity?: Record<
+    string,
+    import("@/browser-projects/manual-corrections").ManualCorrectionEvidenceState
+  >;
+  matchReviews: BrowserMatchReviewRecord[];
   pilot: PilotStateView;
   summary: {
     basisPositions: number;
@@ -199,6 +217,9 @@ export type BrowserAnalysisSnapshot = {
     pagesInspected: number;
     pagesParsed: number;
     ocrRequiredPages: number;
+    ocrProcessedPages?: number;
+    ocrFailedPages?: number;
+    documentDiagnostics: import("@/browser-projects/processing-protocol").BrowserDocumentDiagnostics[];
   };
 };
 
@@ -207,6 +228,17 @@ export type BrowserSelectionRecord = {
   positionId: string;
   selectedSupplierOptionId: string;
   selectedLineIds: string[];
+  comment: string;
+  updatedAt: string;
+};
+
+export type BrowserMatchReviewRecord = {
+  projectId: string;
+  analysisVersionId: string;
+  matchLinkId: string;
+  positionId: string;
+  decision: "CONFIRMED" | "REJECTED";
+  operator: string;
   comment: string;
   updatedAt: string;
 };

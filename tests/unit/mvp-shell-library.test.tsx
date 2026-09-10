@@ -118,7 +118,8 @@ describe("confirmed product library", () => {
     expect(markup).toContain("Noch keine bestätigten Produkte");
     expect(markup).toContain("Produkt hinzufügen");
     expect(markup).toContain("Zum Projekt hinzufügen");
-    expect(markup).toContain("Lesemodell im ersten MVP-Paket");
+    expect(markup).toContain("Suche, Filter und Detailansicht sind verfügbar");
+    expect(markup).toContain("Noch nicht verfügbar");
     expect(markup.match(/disabled=""/g)?.length).toBeGreaterThanOrEqual(4);
     expect(markup).not.toContain("currentPrice");
   });

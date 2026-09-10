@@ -155,7 +155,7 @@ export function ProductLibraryPage({
             className="wb-button wb-button-secondary"
             type="button"
             disabled
-            title="Im nächsten MVP-Paket"
+            title="Noch nicht verfügbar"
           >
             <ArchiveRestore size={17} /> Prüfwarteschlange
             {reviewCount ? <span>{reviewCount}</span> : null}
@@ -164,7 +164,7 @@ export function ProductLibraryPage({
             className="wb-button wb-button-primary"
             type="button"
             disabled
-            title="Im nächsten MVP-Paket"
+            title="Noch nicht verfügbar"
           >
             <Plus size={18} /> Produkt hinzufügen
           </button>
@@ -172,8 +172,8 @@ export function ProductLibraryPage({
       </header>
 
       <p className="library-scope-note" role="note">
-        Lesemodell im ersten MVP-Paket: Suche, Filter und Detailansicht sind
-        aktiv. Import, Prüfung und Projektzuordnung folgen im nächsten Paket.
+        Suche, Filter und Detailansicht sind verfügbar. Import, Produktprüfung
+        und Projektzuordnung sind noch nicht verfügbar.
       </p>
 
       <section className="library-ledger" aria-label="Bibliotheksstatus">
@@ -319,7 +319,7 @@ export function ProductLibraryPage({
                 <p>
                   {filtering
                     ? "Passen Sie Suche oder Filter an. Ungeprüfte Kandidaten bleiben bewusst außerhalb der Bibliothek."
-                    : "Bestätigen Sie den ersten Produktkandidaten oder legen Sie ein Produkt manuell an. Rohzeilen aus Angeboten werden nicht automatisch übernommen."}
+                    : "Produkte werden erst nach fachlicher Prüfung in die Bibliothek übernommen. Produktanlage und Freigabe sind noch nicht verfügbar; Rohzeilen aus Angeboten werden nicht automatisch übernommen."}
                 </p>
               </div>
               {filtering ? (
@@ -339,7 +339,7 @@ export function ProductLibraryPage({
                   className="wb-button wb-button-primary"
                   type="button"
                   disabled
-                  title="Im nächsten MVP-Paket"
+                  title="Noch nicht verfügbar"
                 >
                   <Plus size={17} /> Produkt hinzufügen
                 </button>
@@ -357,7 +357,7 @@ export function ProductLibraryPage({
             type="button"
             className="wb-button wb-button-secondary"
             disabled
-            title="Im nächsten MVP-Paket"
+            title="Noch nicht verfügbar"
           >
             <FolderPlus size={17} /> Zum Projekt hinzufügen
           </button>

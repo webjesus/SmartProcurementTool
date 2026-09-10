@@ -316,9 +316,9 @@ export function NewProjectPage({ limits }: { limits: BrowserUploadLimits }) {
       </header>
 
       <aside className="browser-local-prototype-note" role="note">
-        Browserlokaler Projekt-Prototyp: Projekte und PDFs bleiben nur in
-        diesem Browser. Gemeinsame Serverprojekte folgen in einem eigenen
-        Implementierungspaket.
+        Lokal gespeichert: Projekte und PDFs bleiben nur in
+        diesem Browser. Gemeinsame Serverprojekte sind noch nicht verfügbar.
+        Sichern Sie wichtige Projekte regelmäßig.
       </aside>
 
       <div className="new-project-columns">
@@ -398,7 +398,11 @@ export function NewProjectPage({ limits }: { limits: BrowserUploadLimits }) {
             <CloudUpload size={40} />
             <strong>Dateien hierher ziehen oder <em>auswählen</em></strong>
             <span>PDF-Dateien hochladen</span>
-            <i>{uploading ? "Dateien werden gespeichert..." : "Dateien auswählen"}</i>
+            <i>
+              {uploading
+                ? "Dokumente werden geprüft · OCR startet bei Bedarf automatisch …"
+                : "Dateien auswählen"}
+            </i>
           </button>
           <input
             ref={fileInput}

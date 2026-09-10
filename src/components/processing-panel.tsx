@@ -178,7 +178,7 @@ export function ProcessingPanel() {
             <strong>{run?.error ?? run?.pauseReason ?? openIssue?.requiredOperatorAction}</strong>
             {openIssue ? (
               <span>
-                Tool: {openIssue.toolName} · Ruleset: {run?.rulesetVersion} · Quellen: {state.plan?.documents.length ?? 0} Pilotdokumente · {openIssue.message}
+                Tool: {openIssue.toolName} · Ruleset: {run?.rulesetVersion} · Quellen: {state.plan?.documents.length ?? 0} Dokumente · {openIssue.message}
               </span>
             ) : null}
           </div>

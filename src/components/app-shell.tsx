@@ -13,6 +13,8 @@ import {
   FolderPlus,
   MailPlus,
   Menu,
+  PanelLeftClose,
+  PanelLeftOpen,
   Plus,
   Scale,
   X
@@ -57,6 +59,7 @@ function Navigation({
           <Link
             key={item.id}
             href={item.href}
+            title={item.label}
             className={activeFor(pathname, item) ? "active" : ""}
             onClick={close}
           >
@@ -73,6 +76,7 @@ function Navigation({
           <Link
             key={item.id}
             href={item.href}
+            title={item.label}
             className={activeFor(pathname, item) ? "active" : ""}
             onClick={close}
           >
@@ -83,6 +87,20 @@ function Navigation({
       })}
     </nav>
   );
+}
+
+export function isProjectWorkspacePath(pathname: string): boolean {
+  const segments = pathname.split("/").filter(Boolean);
+  return (
+    segments[0] === "projects" &&
+    Boolean(segments[1]) &&
+    segments[1] !== "new" &&
+    segments.length >= 3
+  );
+}
+
+export function isLvWorkspacePath(pathname: string): boolean {
+  return pathname === "/lv-vergleich" || pathname.endsWith("/lv-vergleich");
 }
 
 export function AppShell({
@@ -97,7 +115,17 @@ export function AppShell({
   const pathname = usePathname();
   const identity = useDecisionIdentity();
   const [mobileNavigation, setMobileNavigation] = useState(false);
+  const [workspaceNavigationExpanded, setWorkspaceNavigationExpanded] =
+    useState(false);
   const current = globalNavigationItemForPath(pathname);
+  const focusedWorkspace =
+    isProjectWorkspacePath(pathname) || isLvWorkspacePath(pathname);
+  const lvWorkspace = isLvWorkspacePath(pathname);
+  const workspaceNavigation = focusedWorkspace
+    ? workspaceNavigationExpanded
+      ? "expanded"
+      : "compact"
+    : "standard";
   const initials =
     identity.user?.displayName
       .split(/\s+/u)
@@ -106,7 +134,12 @@ export function AppShell({
       .join("") || "WB";
 
   return (
-    <div className="wb-app-frame" data-mobile-nav={mobileNavigation}>
+    <div
+      className="wb-app-frame"
+      data-mobile-nav={mobileNavigation}
+      data-workspace-nav={workspaceNavigation}
+      data-lv-workspace={lvWorkspace}
+    >
       <aside className="wb-sidebar">
         <div className="wb-brand-block">
           <Link
@@ -128,6 +161,31 @@ export function AppShell({
               <small>TECHNICAL LEDGER</small>
             </span>
           </Link>
+          {focusedWorkspace ? (
+            <button
+              type="button"
+              className="wb-workspace-nav-toggle"
+              aria-label={
+                workspaceNavigationExpanded
+                  ? "Navigation minimieren"
+                  : "Navigation erweitern"
+              }
+              title={
+                workspaceNavigationExpanded
+                  ? "Navigation minimieren"
+                  : "Navigation erweitern"
+              }
+              onClick={() =>
+                setWorkspaceNavigationExpanded((expanded) => !expanded)
+              }
+            >
+              {workspaceNavigationExpanded ? (
+                <PanelLeftClose size={17} />
+              ) : (
+                <PanelLeftOpen size={17} />
+              )}
+            </button>
+          ) : null}
           <button
             type="button"
             className="wb-mobile-close"
@@ -152,19 +210,17 @@ export function AppShell({
         />
 
         <div className="wb-sidebar-footer">
-          <Link href="/lv-vergleich">
+          <Link href="/projects">
             <Scale size={17} />
             <span>
-              <strong>LV-Arbeitsbereich</strong>
-              <small>Bestehenden Vergleich öffnen</small>
+              <strong>Projektarbeitsplatz</strong>
+              <small>Projekt auswählen</small>
             </span>
             <ChevronRight size={15} />
           </Link>
           <p>
             <i />
-            {browserLocal
-              ? "Browser-Testmodus · nicht produktiv"
-              : "Projekt-Prototyp · browserlokal"}
+            Lokal gespeichert
           </p>
         </div>
       </aside>
@@ -195,7 +251,7 @@ export function AppShell({
           </div>
           <div className="wb-topbar-actions">
             <span className="wb-build-state">
-              <i /> MVP-Arbeitsstand
+              <i /> Arbeitsbereich
             </span>
             <ThemeControl />
             {identity.enabled && identity.user ? (
@@ -213,7 +269,7 @@ export function AppShell({
           </div>
         </header>
         <div className="wb-page-content">
-          {devUiEnabled ? <ProcessingPanel /> : null}
+          {devUiEnabled && !browserLocal ? <ProcessingPanel /> : null}
           {children}
         </div>
       </main>

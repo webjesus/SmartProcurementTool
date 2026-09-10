@@ -1,6 +1,4 @@
-import {
-  assignProjectIllustrationId
-} from "@/browser-projects/project-illustrations";
+import { assignProjectIllustrationId } from "@/browser-projects/project-illustrations";
 import { getBrowserProjectRepositories } from "@/browser-projects/repository-factory";
 import type { ProjectRepositories } from "@/browser-projects/repositories";
 import {
@@ -9,9 +7,16 @@ import {
   type BrowserAnalysisSnapshot,
   type BrowserDiscipline,
   type BrowserDocumentRecord,
+  type BrowserMatchReviewRecord,
   type BrowserProjectBackup,
   type BrowserProjectRecord
 } from "@/browser-projects/types";
+import { applyBrowserMatchReview, buildBrowserAnalysis } from "@/browser-projects/browser-analysis";
+import {
+  appendManualCorrection,
+  materializeManualCorrections,
+  type BrowserManualCorrectionCommand
+} from "@/browser-projects/manual-corrections";
 import {
   ProjectMetadataSchema,
   ProjectMetadataUpdateSchema,
@@ -19,11 +24,21 @@ import {
 } from "@/domain/project-metadata";
 import {
   applyAutomaticBasisSelection,
+  applyFullRunDocumentClassification,
   classifyBrowserDocumentContent,
   isStructurallyPlausibleBasis,
   reconcileDocumentRelations
 } from "@/browser-projects/document-classification";
-import { inspectBrowserPdf } from "@/browser-projects/pdf-inspection";
+import type { BrowserWorkerResult } from "@/browser-projects/processing-protocol";
+import {
+  inspectBrowserPdf,
+  type BrowserPdfInspectionOptions
+} from "@/browser-projects/pdf-inspection";
+import {
+  BROWSER_OCR_ENGINE_VERSION,
+  BROWSER_OCR_MODEL_VERSION
+} from "@/browser-projects/ocr-fallback";
+import { ProjectWorkspaceStateSchema } from "@/domain/project-workspace";
 import { z } from "zod";
 
 export type BrowserUploadLimits = {
@@ -31,6 +46,24 @@ export type BrowserUploadLimits = {
   maxTotalBytes: number;
   maxFileBytes: number;
   maxTotalPages: number;
+};
+
+export type BrowserManualCorrectionInput = {
+  projectId: string;
+  analysisVersionId: string;
+  expectedRevision: number;
+  command: BrowserManualCorrectionCommand;
+  operatorId: string;
+  operatorLabel: string;
+  comment: string;
+  reasonCode?: "OCR_CORRECTION" | "SOURCE_REGION_CORRECTION";
+};
+
+export type BrowserManualBasisBootstrapInput = Omit<
+  BrowserManualCorrectionInput,
+  "analysisVersionId" | "expectedRevision" | "command"
+> & {
+  command: Extract<BrowserManualCorrectionCommand, { action: "ADD_BASIS_POSITION" }>;
 };
 
 export const DEFAULT_BROWSER_UPLOAD_LIMITS: BrowserUploadLimits = {
@@ -48,6 +81,28 @@ const MAX_BACKUP_SELECTIONS = 50_000;
 const nonNegativeInteger = z.number().int().nonnegative();
 const optionalString = z.string().max(2_000).nullable();
 const confidenceSchema = z.enum(["HIGH", "MEDIUM", "LOW"]);
+const archivedSelectionSchema = z
+  .object({
+    projectId: z.string().min(1).max(200),
+    positionId: z.string().min(1).max(200),
+    selectedSupplierOptionId: z.string().min(1).max(200),
+    selectedLineIds: z.array(z.string().min(1).max(200)).max(1_000),
+    comment: z.string().max(2_000),
+    updatedAt: z.string().max(100)
+  })
+  .strict();
+const matchReviewSchema = z
+  .object({
+    projectId: z.string().min(1).max(200),
+    analysisVersionId: z.string().min(1).max(200),
+    matchLinkId: z.string().min(1).max(300),
+    positionId: z.string().min(1).max(300),
+    decision: z.enum(["CONFIRMED", "REJECTED"]),
+    operator: z.string().min(1).max(200),
+    comment: z.string().max(2_000),
+    updatedAt: z.string().datetime()
+  })
+  .strict();
 const projectCheckpointSchema = z
   .object({
     runId: z.string().min(1).max(200),
@@ -107,9 +162,7 @@ const backupProjectSchema = z
     documentCount: nonNegativeInteger,
     basisPositionCount: nonNegativeInteger,
     supplierOfferCount: nonNegativeInteger,
-    processingFailureCode: z
-      .enum(["FAILED_NO_BASIS_POSITIONS", "PROCESSING_ERROR"])
-      .nullable(),
+    processingFailureCode: z.enum(["FAILED_NO_BASIS_POSITIONS", "PROCESSING_ERROR"]).nullable(),
     activeDiscipline: z
       .enum(["HEIZUNG", "SANITAER", "INSTALLATIONSSYSTEME", "MULTI", "UNKNOWN"])
       .nullable()
@@ -152,6 +205,11 @@ const backupDocumentSchema = z
       .strict(),
     classificationSignals: z.array(z.string().max(1_000)).max(1_000),
     textLayerCharacterCount: nonNegativeInteger,
+    ocrProcessedAt: z.string().max(100).nullable().optional(),
+    ocrSampledPages: nonNegativeInteger.optional(),
+    ocrMeanConfidence: z.number().min(0).max(100).nullable().optional(),
+    ocrEngineVersion: z.string().max(100).nullable().optional(),
+    ocrModelVersion: z.string().max(100).nullable().optional(),
     preliminaryPositionCount: nonNegativeInteger,
     activeBasis: z.boolean(),
     excludedFromProcessing: z.boolean(),
@@ -199,6 +257,22 @@ const backupEnvelopeSchema = z
             projectId: z.string().min(1).max(200),
             analysisVersionId: z.string().min(1).max(200),
             createdAt: z.string().max(100),
+            derivedFromAnalysisVersionId: z.string().max(200).nullable().optional(),
+            manualCorrectionRevision: nonNegativeInteger.optional(),
+            archivedSelections: z
+              .array(archivedSelectionSchema)
+              .max(MAX_BACKUP_SELECTIONS)
+              .optional(),
+            manualCorrections: z.array(z.unknown()).max(MAX_BACKUP_SELECTIONS).optional(),
+            manualDisplayLabels: z.record(z.string().max(500), z.string().max(200)).optional(),
+            manualEvidenceStatusByEntity: z
+              .record(z.string().max(500), z.enum(["MISSING", "VERIFIED_VISUAL"]))
+              .optional(),
+            matchReviews: z
+              .array(matchReviewSchema)
+              .max(MAX_BACKUP_SELECTIONS)
+              .optional()
+              .default([]),
             pilot: z.unknown(),
             summary: z
               .object({
@@ -209,7 +283,28 @@ const backupEnvelopeSchema = z
                 warnings: nonNegativeInteger,
                 pagesInspected: nonNegativeInteger,
                 pagesParsed: nonNegativeInteger,
-                ocrRequiredPages: nonNegativeInteger
+                ocrRequiredPages: nonNegativeInteger,
+                ocrProcessedPages: nonNegativeInteger.optional().default(0),
+                ocrFailedPages: nonNegativeInteger.optional().default(0),
+                documentDiagnostics: z
+                  .array(
+                    z
+                      .object({
+                        documentId: z.string().min(1).max(200),
+                        pagesInspected: nonNegativeInteger,
+                        candidatePositions: nonNegativeInteger,
+                        extractedPositions: nonNegativeInteger,
+                        missingSourceRegions: nonNegativeInteger,
+                        ocrProcessedPages: nonNegativeInteger,
+                        ocrFailedPages: nonNegativeInteger,
+                        ocrRequiredPages: nonNegativeInteger,
+                        multiPagePositions: nonNegativeInteger
+                      })
+                      .strict()
+                  )
+                  .max(DEFAULT_BROWSER_UPLOAD_LIMITS.maxFiles)
+                  .optional()
+                  .default([])
               })
               .strict()
           })
@@ -233,7 +328,7 @@ const backupEnvelopeSchema = z
     workspace: z
       .object({
         projectId: z.string().min(1).max(200),
-        state: z.record(z.string().max(200), z.unknown()),
+        state: ProjectWorkspaceStateSchema,
         updatedAt: z.string().max(100)
       })
       .strict()
@@ -264,17 +359,118 @@ function id(): string {
   return crypto.randomUUID();
 }
 
-async function sha256(bytes: ArrayBuffer): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return [...new Uint8Array(digest)]
-    .map((value) => value.toString(16).padStart(2, "0"))
-    .join("");
+function emptyManualBootstrapRoot(input: {
+  projectId: string;
+  documents: BrowserDocumentRecord[];
+}): BrowserAnalysisSnapshot {
+  const basisDocument = input.documents.find(
+    (document) => document.documentType === "BASIS_LV" && document.activeBasis
+  );
+  if (!basisDocument) throw new Error("MANUAL_BOOTSTRAP_ACTIVE_BASIS_REQUIRED");
+
+  // buildBrowserAnalysis establishes the complete, versioned analysis shape.
+  // The internal seed is removed from every extraction and derived collection
+  // before the root is persisted, leaving an honest empty machine result that
+  // can receive the first append-only manual ADD_BASIS_POSITION event.
+  const root = buildBrowserAnalysis({
+    projectId: input.projectId,
+    documents: input.documents,
+    result: {
+      basisLines: [
+        {
+          documentId: basisDocument.documentId,
+          positionNumber: "0.0.0",
+          description: "Interne Bootstrap-Position",
+          quantity: null,
+          unit: null,
+          pageNumber: 1,
+          lineIndex: 0,
+          reviewReasons: ["SOURCE_REGION_MISSING"]
+        }
+      ],
+      supplierLines: [],
+      warnings: ["Keine Basis-Positionen automatisch erkannt."],
+      diagnostics: {
+        pagesInspected: 0,
+        pagesParsed: 0,
+        ocrRequiredPages: input.documents.reduce(
+          (total, document) =>
+            total + (document.scanState === "OCR_REQUIRED" ? document.pageCount : 0),
+          0
+        ),
+        ocrProcessedPages: 0,
+        ocrFailedPages: 0,
+        matchingCandidates: 0,
+        documents: input.documents.map((document) => ({
+          documentId: document.documentId,
+          pagesInspected: 0,
+          candidatePositions: document.preliminaryPositionCount,
+          extractedPositions: 0,
+          missingSourceRegions: 0,
+          ocrProcessedPages: 0,
+          ocrFailedPages: 0,
+          ocrRequiredPages: document.scanState === "OCR_REQUIRED" ? document.pageCount : 0,
+          multiPagePositions: 0
+        }))
+      }
+    }
+  });
+  const analysis = root.pilot.analysis;
+  if (!analysis) throw new Error("MANUAL_BOOTSTRAP_ANALYSIS_REQUIRED");
+  root.pilot.analysis = {
+    ...analysis,
+    basisPositionFrom: "",
+    basisPositionTo: "",
+    basisPositions: [],
+    matchLinks: [],
+    supplierOptions: [],
+    recommendations: []
+  };
+  root.pilot.runs = root.pilot.runs.map((run) => ({
+    ...run,
+    result: {
+      ...run.result,
+      envelope: {
+        ...run.result.envelope,
+        extraction: {
+          ...run.result.envelope.extraction,
+          basisPositions: []
+        }
+      }
+    }
+  }));
+  root.pilot.projectReview = {
+    ...root.pilot.projectReview,
+    positions: [],
+    invariant: {
+      valid: true,
+      totalBasisLeafPositions: 0,
+      lvRows: 0,
+      statusCount: 0,
+      duplicatePositionIds: [],
+      duplicatePositionNumbers: [],
+      missingPositionIds: [],
+      orphanDecisionIds: [],
+      orphanSupplierOptionIds: [],
+      unknownStatusPositionIds: [],
+      problemPositionIds: []
+    }
+  };
+  root.summary = {
+    ...root.summary,
+    basisPositions: 0,
+    positionsWithOffers: 0,
+    positionsWithoutOffers: 0
+  };
+  return root;
 }
 
-export function classifyBrowserDocument(input: {
-  fileName: string;
-  text: string;
-}) {
+async function sha256(bytes: ArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+export function classifyBrowserDocument(input: { fileName: string; text: string }) {
   return classifyBrowserDocumentContent({
     fileName: input.fileName,
     inspection: {
@@ -347,7 +543,7 @@ async function documentFromFile(
   }
   const [checksum, inspection] = await Promise.all([
     sha256(buffer),
-    inspectBrowserPdf(bytes)
+    inspectBrowserPdf(bytes, { enableOcr: true, maxOcrPages: 3 })
   ]);
   const classification = classifyBrowserDocumentContent({
     fileName: file.name,
@@ -380,6 +576,11 @@ async function documentFromFile(
       classificationDimensions: classification.dimensions,
       classificationSignals: classification.signals,
       textLayerCharacterCount: inspection.textLayerCharacterCount,
+      ocrProcessedAt: (inspection.ocrPageCount ?? 0) > 0 ? new Date().toISOString() : null,
+      ocrSampledPages: inspection.ocrPageCount ?? 0,
+      ocrMeanConfidence: inspection.ocrMeanConfidence ?? null,
+      ocrEngineVersion: (inspection.ocrPageCount ?? 0) > 0 ? BROWSER_OCR_ENGINE_VERSION : null,
+      ocrModelVersion: (inspection.ocrPageCount ?? 0) > 0 ? BROWSER_OCR_MODEL_VERSION : null,
       preliminaryPositionCount: classification.preliminaryPositionCount,
       activeBasis: false,
       excludedFromProcessing: false,
@@ -388,11 +589,13 @@ async function documentFromFile(
       classificationConfidence: classification.confidence,
       classificationWarnings: classification.warnings,
       processingStatus:
-        classification.documentType === "SCAN_OCR_REQUIRED"
+        classification.scanState === "OCR_AVAILABLE"
           ? "PRÜFUNG_ERFORDERLICH"
-          : classification.confidence === "LOW"
+          : classification.documentType === "SCAN_OCR_REQUIRED"
             ? "PRÜFUNG_ERFORDERLICH"
-            : "BEREIT"
+            : classification.confidence === "LOW"
+              ? "PRÜFUNG_ERFORDERLICH"
+              : "BEREIT"
     }
   };
 }
@@ -408,10 +611,7 @@ export class BrowserProjectService {
     return this.repositories.projects.get(projectId);
   }
 
-  async createProject(
-    input: string | ProjectMetadata,
-    objectDescription = ""
-  ) {
+  async createProject(input: string | ProjectMetadata, objectDescription = "") {
     const metadata =
       typeof input === "string"
         ? {
@@ -490,21 +690,16 @@ export class BrowserProjectService {
       ...(update.architectureOffice === undefined
         ? {}
         : { architectureOffice: update.architectureOffice }),
-      ...(update.objectDescription === undefined
-        ? {}
-        : { description: update.objectDescription })
+      ...(update.objectDescription === undefined ? {} : { description: update.objectDescription })
     });
     const next = {
       ...current,
       ...update,
       name: parsedMetadata.name ?? current.name,
       address: parsedMetadata.address ?? current.address,
-      engineeringOffice:
-        parsedMetadata.engineeringOffice ?? current.engineeringOffice,
-      architectureOffice:
-        parsedMetadata.architectureOffice ?? current.architectureOffice,
-      objectDescription:
-        parsedMetadata.description ?? current.objectDescription,
+      engineeringOffice: parsedMetadata.engineeringOffice ?? current.engineeringOffice,
+      architectureOffice: parsedMetadata.architectureOffice ?? current.architectureOffice,
+      objectDescription: parsedMetadata.description ?? current.objectDescription,
       updatedAt: new Date().toISOString()
     };
     if (!next.name) throw new Error("PROJECT_NAME_REQUIRED");
@@ -533,10 +728,7 @@ export class BrowserProjectService {
     const records: BrowserDocumentRecord[] = [];
     const items: BrowserUploadItemResult[] = [];
     let accumulatedBytes = existing.reduce((sum, item) => sum + item.size, 0);
-    let accumulatedPages = existing.reduce(
-      (sum, item) => sum + item.pageCount,
-      0
-    );
+    let accumulatedPages = existing.reduce((sum, item) => sum + item.pageCount, 0);
 
     for (const file of files) {
       try {
@@ -561,10 +753,7 @@ export class BrowserProjectService {
           });
           continue;
         }
-        if (
-          accumulatedPages + prepared.document.pageCount >
-          limits.maxTotalPages
-        ) {
+        if (accumulatedPages + prepared.document.pageCount > limits.maxTotalPages) {
           throw new Error("TOO_MANY_PAGES");
         }
         await this.repositories.documentBlobs.save({
@@ -576,21 +765,17 @@ export class BrowserProjectService {
         records.push(prepared.document);
         accumulatedBytes += file.size;
         accumulatedPages += prepared.document.pageCount;
-        const ocrRequired =
-          prepared.document.documentType === "SCAN_OCR_REQUIRED";
+        const ocrRequired = prepared.document.documentType === "SCAN_OCR_REQUIRED";
         items.push({
           fileName: file.name,
           status: ocrRequired ? "OCR_REQUIRED" : "ADDED",
           document: prepared.document,
           existingDocumentId: null,
-          message: ocrRequired
-            ? "Scan erkannt. OCR erforderlich."
-            : "Datei hinzugefügt."
+          message: ocrRequired ? "Scan erkannt. OCR erforderlich." : "Datei hinzugefügt."
         });
       } catch (storageError) {
         const message =
-          storageError instanceof DOMException &&
-          storageError.name === "QuotaExceededError"
+          storageError instanceof DOMException && storageError.name === "QuotaExceededError"
             ? "NOT_ENOUGH_BROWSER_STORAGE"
             : storageError instanceof Error
               ? storageError.message
@@ -608,16 +793,13 @@ export class BrowserProjectService {
     const documents = applyAutomaticBasisSelection(
       reconcileDocumentRelations([...existing, ...records])
     );
-    await Promise.all(
-      documents.map((document) => this.repositories.documents.save(document))
-    );
+    await Promise.all(documents.map((document) => this.repositories.documents.save(document)));
     await this.repositories.projects.save({
       ...project,
       documentCount: documents.length,
       supplierOfferCount: documents.filter(
         (item) =>
-          item.documentType === "SUPPLIER_OFFER" ||
-          item.documentType === "MANUFACTURER_OFFER"
+          item.documentType === "SUPPLIER_OFFER" || item.documentType === "MANUFACTURER_OFFER"
       ).length,
       status: documents.some(
         (item) =>
@@ -649,21 +831,410 @@ export class BrowserProjectService {
     return this.repositories.documentBlobs.get(projectId, documentId);
   }
 
+  async runDocumentOcr(
+    projectId: string,
+    documentId: string,
+    onOcrProgress?: BrowserPdfInspectionOptions["onOcrProgress"]
+  ): Promise<BrowserDocumentRecord> {
+    const [document, blob] = await Promise.all([
+      this.repositories.documents.get(projectId, documentId),
+      this.repositories.documentBlobs.get(projectId, documentId)
+    ]);
+    if (!document) throw new Error("DOCUMENT_NOT_FOUND");
+    if (!blob) throw new Error("DOCUMENT_BLOB_MISSING");
+    const inspection = await inspectBrowserPdf(new Uint8Array(await blob.arrayBuffer()), {
+      enableOcr: true,
+      maxOcrPages: 3,
+      onOcrProgress
+    });
+    const classification = classifyBrowserDocumentContent({
+      fileName: document.originalFileName,
+      inspection
+    });
+    const preserveManualRole = document.manualRoleOverride;
+    const next: BrowserDocumentRecord = {
+      ...document,
+      detectedDocumentType: classification.detectedDocumentType,
+      documentType: preserveManualRole ? document.documentType : classification.documentType,
+      discipline:
+        preserveManualRole && document.discipline !== "UNKNOWN"
+          ? document.discipline
+          : classification.discipline,
+      supplierName: document.supplierName ?? classification.supplierName,
+      offerNumber: document.offerNumber ?? classification.offerNumber,
+      documentVersion: document.documentVersion ?? classification.documentVersion,
+      relationType: classification.relationType,
+      scanState: classification.scanState,
+      projectName: classification.projectName,
+      projectNumber: classification.projectNumber,
+      lvNumber: classification.lvNumber,
+      classificationDimensions: classification.dimensions,
+      classificationSignals: classification.signals,
+      textLayerCharacterCount: inspection.textLayerCharacterCount,
+      ocrProcessedAt: new Date().toISOString(),
+      ocrSampledPages: inspection.ocrPageCount ?? 0,
+      ocrMeanConfidence: inspection.ocrMeanConfidence ?? null,
+      ocrEngineVersion: BROWSER_OCR_ENGINE_VERSION,
+      ocrModelVersion: BROWSER_OCR_MODEL_VERSION,
+      preliminaryPositionCount: classification.preliminaryPositionCount,
+      classificationConfidence: classification.confidence,
+      classificationWarnings: classification.warnings,
+      processingStatus:
+        classification.scanState === "OCR_AVAILABLE"
+          ? "PRÜFUNG_ERFORDERLICH"
+          : classification.documentType === "SCAN_OCR_REQUIRED"
+            ? "PRÜFUNG_ERFORDERLICH"
+            : classification.confidence === "LOW"
+              ? "PRÜFUNG_ERFORDERLICH"
+              : "BEREIT"
+    };
+    const documents = applyAutomaticBasisSelection(
+      reconcileDocumentRelations(
+        (await this.repositories.documents.list(projectId)).map((current) =>
+          current.documentId === documentId ? next : current
+        )
+      )
+    );
+    await Promise.all(documents.map((current) => this.repositories.documents.save(current)));
+    await this.updateProject(projectId, {
+      status: "PRÜFUNG_ERFORDERLICH",
+      activeAnalysisVersionId: null,
+      basisPositionCount: 0,
+      supplierOfferCount: documents.filter((current) =>
+        ["SUPPLIER_OFFER", "MANUFACTURER_OFFER"].includes(current.documentType)
+      ).length,
+      processingFailureCode: null,
+      lastRoute: "DOCUMENT_REVIEW"
+    });
+    return documents.find((current) => current.documentId === documentId)!;
+  }
+
   latestAnalysis(projectId: string) {
     return this.repositories.analyses.latest(projectId);
+  }
+
+  async applyDocumentClassifications(
+    projectId: string,
+    updates: NonNullable<BrowserWorkerResult["documentClassifications"]>
+  ): Promise<BrowserDocumentRecord[]> {
+    const documents = await this.repositories.documents.list(projectId);
+    const byId = new Map(updates.map((update) => [update.documentId, update.classification]));
+    if (
+      updates.some(
+        (update) => !documents.some((document) => document.documentId === update.documentId)
+      )
+    ) {
+      throw new Error("DOCUMENT_NOT_FOUND");
+    }
+    const resolved = applyAutomaticBasisSelection(
+      documents.map((document) => {
+        const classification = byId.get(document.documentId);
+        return classification
+          ? applyFullRunDocumentClassification(document, classification)
+          : document;
+      })
+    );
+    await Promise.all(resolved.map((document) => this.repositories.documents.save(document)));
+    return resolved;
   }
 
   saveAnalysis(snapshot: BrowserAnalysisSnapshot) {
     return this.repositories.analyses.save(snapshot);
   }
 
+  async processingProtection(projectId: string) {
+    const [previous, selections] = await Promise.all([
+      this.repositories.analyses.latest(projectId),
+      this.repositories.selections.list(projectId)
+    ]);
+    const requiresConfirmation = Boolean(
+      selections.length ||
+        previous?.manualCorrections?.length ||
+        previous?.matchReviews.length ||
+        previous?.pilot.supplierDecisions?.length ||
+        previous?.pilot.supplierDecisionReviewActions?.length ||
+        previous?.pilot.matchReviewActions?.length
+    );
+    // Includes human changes during processing, not just the machine version ID.
+    const confirmationToken = JSON.stringify([
+      previous?.analysisVersionId,
+      previous?.manualCorrections,
+      previous?.matchReviews,
+      previous?.pilot.supplierDecisions,
+      previous?.pilot.supplierDecisionReviewActions,
+      previous?.pilot.matchReviewActions,
+      selections
+    ]);
+    return {
+      requiresConfirmation,
+      confirmationToken,
+      previousAnalysisVersionId: previous?.analysisVersionId ?? null
+    };
+  }
+
+  async saveProcessingAnalysis(snapshot: BrowserAnalysisSnapshot, confirmationToken?: string) {
+    const protection = await this.processingProtection(snapshot.projectId);
+    if (protection.requiresConfirmation && confirmationToken !== protection.confirmationToken) {
+      throw new Error("REPROCESSING_CONFIRMATION_REQUIRED");
+    }
+    if (protection.previousAnalysisVersionId === snapshot.analysisVersionId) {
+      throw new Error("REPROCESSING_NEW_VERSION_REQUIRED");
+    }
+    const selections = await this.repositories.selections.list(snapshot.projectId);
+    if (protection.previousAnalysisVersionId && selections.length) {
+      const previous = await this.repositories.analyses.get(
+        snapshot.projectId,
+        protection.previousAnalysisVersionId
+      );
+      if (!previous) throw new Error("PREVIOUS_ANALYSIS_NOT_FOUND");
+      await this.repositories.analyses.save({ ...previous, archivedSelections: selections });
+    }
+    // Keep the old immutable extraction/corrections in its own snapshot. Matching
+    // old line-index IDs onto new extraction output is not a trustworthy rebase.
+    await this.repositories.analyses.save(snapshot);
+    await Promise.all(
+      selections.map((selection) =>
+        this.repositories.selections.delete(snapshot.projectId, selection.positionId)
+      )
+    );
+  }
+
+  async bootstrapManualBasisPosition(
+    input: BrowserManualBasisBootstrapInput
+  ): Promise<BrowserAnalysisSnapshot> {
+    const project = await this.repositories.projects.get(input.projectId);
+    if (!project) throw new Error("PROJECT_NOT_FOUND");
+    if (
+      project.status !== "FEHLER" ||
+      project.processingFailureCode !== "FAILED_NO_BASIS_POSITIONS" ||
+      project.activeAnalysisVersionId !== null
+    ) {
+      throw new Error("MANUAL_BOOTSTRAP_NOT_ALLOWED");
+    }
+
+    const storedDocuments = (await this.repositories.documents.list(input.projectId)).filter(
+      (document) => !document.excludedFromProcessing
+    );
+    const activeBasis = storedDocuments.find(
+      (document) => document.documentType === "BASIS_LV" && document.activeBasis
+    );
+    if (!activeBasis || input.command.value.documentId !== activeBasis.documentId) {
+      throw new Error("MANUAL_BOOTSTRAP_ACTIVE_BASIS_REQUIRED");
+    }
+    if (!(await this.repositories.documentBlobs.get(input.projectId, activeBasis.documentId))) {
+      throw new Error("DOCUMENT_BLOB_MISSING");
+    }
+    const discipline = project.activeDiscipline ?? activeBasis.discipline;
+    const documents = storedDocuments.filter(
+      (document) =>
+        document.documentId === activeBasis.documentId ||
+        document.documentType === "SCAN_OCR_REQUIRED" ||
+        document.discipline === discipline ||
+        document.discipline === "MULTI" ||
+        (discipline === "SANITAER" && document.discipline === "INSTALLATIONSSYSTEME")
+    );
+
+    const root = emptyManualBootstrapRoot({
+      projectId: input.projectId,
+      documents
+    });
+    const previousCreatedAt = Date.parse(root.createdAt);
+    const createdAt = new Date(
+      Math.max(Date.now(), Number.isFinite(previousCreatedAt) ? previousCreatedAt + 1 : 0)
+    ).toISOString();
+    const appended = appendManualCorrection({
+      snapshot: root,
+      documents,
+      history: [],
+      expectedRevision: 0,
+      command: input.command,
+      audit: {
+        id: crypto.randomUUID(),
+        operatorId: input.operatorId,
+        operatorLabel: input.operatorLabel,
+        reasonCode: input.reasonCode ?? "OCR_CORRECTION",
+        comment: input.comment,
+        createdAt
+      }
+    });
+    const effective = materializeManualCorrections({
+      snapshot: root,
+      documents,
+      history: appended.history
+    });
+    const nextAnalysis = effective.snapshot.pilot.analysis;
+    if (!nextAnalysis) throw new Error("MANUAL_BOOTSTRAP_ANALYSIS_REQUIRED");
+    const analysisVersionId = crypto.randomUUID();
+    const derived: BrowserAnalysisSnapshot = {
+      ...effective.snapshot,
+      analysisVersionId,
+      createdAt,
+      derivedFromAnalysisVersionId: root.analysisVersionId,
+      manualCorrectionRevision: effective.correctionRevision,
+      manualCorrections: appended.history,
+      manualDisplayLabels: effective.displayLabels,
+      manualEvidenceStatusByEntity: effective.evidenceStatusByEntity,
+      matchReviews: [],
+      pilot: {
+        ...effective.snapshot.pilot,
+        analysis: {
+          ...nextAnalysis,
+          id: analysisVersionId,
+          generatedAt: createdAt
+        },
+        matchReviewActions: [],
+        supplierDecisions: [],
+        supplierDecisionReviewActions: [],
+        projectReview: {
+          ...effective.snapshot.pilot.projectReview,
+          analysisVersionId
+        }
+      }
+    };
+
+    await this.repositories.analyses.save(root);
+    await this.repositories.analyses.save(derived);
+    const selections = await this.repositories.selections.list(input.projectId);
+    await Promise.all(
+      selections.map((selection) =>
+        this.repositories.selections.delete(input.projectId, selection.positionId)
+      )
+    );
+    await this.updateProject(input.projectId, {
+      activeAnalysisVersionId: analysisVersionId,
+      basisPositionCount: derived.summary.basisPositions,
+      supplierOfferCount: derived.summary.supplierOffers,
+      status: "PRÜFUNG_ERFORDERLICH",
+      processingFailureCode: null,
+      processingCheckpoint: null,
+      lastRoute: "PROCESSING_RESULT",
+      lastOpenedAt: createdAt
+    });
+    return derived;
+  }
+
+  async applyManualCorrection(
+    input: BrowserManualCorrectionInput
+  ): Promise<BrowserAnalysisSnapshot> {
+    const current = await this.repositories.analyses.get(input.projectId, input.analysisVersionId);
+    if (!current) throw new Error("MANUAL_CORRECTION_ANALYSIS_NOT_FOUND");
+    const project = await this.repositories.projects.get(input.projectId);
+    if (!project) throw new Error("PROJECT_NOT_FOUND");
+    if (
+      project.activeAnalysisVersionId &&
+      project.activeAnalysisVersionId !== input.analysisVersionId
+    ) {
+      throw new Error("MANUAL_CORRECTION_STALE_ANALYSIS");
+    }
+
+    const rootAnalysisVersionId = current.derivedFromAnalysisVersionId ?? current.analysisVersionId;
+    const root = await this.repositories.analyses.get(input.projectId, rootAnalysisVersionId);
+    if (!root) throw new Error("MANUAL_CORRECTION_ROOT_ANALYSIS_NOT_FOUND");
+
+    const documents = await this.repositories.documents.list(input.projectId);
+    const existingHistory = current.manualCorrections ?? [];
+    const previousCreatedAt = Date.parse(current.createdAt);
+    const createdAt = new Date(
+      Math.max(Date.now(), Number.isFinite(previousCreatedAt) ? previousCreatedAt + 1 : 0)
+    ).toISOString();
+    const appended = appendManualCorrection({
+      snapshot: root,
+      documents,
+      history: existingHistory,
+      expectedRevision: input.expectedRevision,
+      command: input.command,
+      audit: {
+        id: crypto.randomUUID(),
+        operatorId: input.operatorId,
+        operatorLabel: input.operatorLabel,
+        reasonCode: input.reasonCode ?? "OCR_CORRECTION",
+        comment: input.comment,
+        createdAt
+      }
+    });
+    const effective = materializeManualCorrections({
+      snapshot: root,
+      documents,
+      history: appended.history
+    });
+    // Keep one effective derived snapshot beside the immutable machine result.
+    // Subsequent events replay the root plus the append-only audit history and
+    // replace only that derived materialization, avoiding a full LV copy per edit.
+    const analysisVersionId = current.derivedFromAnalysisVersionId
+      ? current.analysisVersionId
+      : crypto.randomUUID();
+    const nextAnalysis = effective.snapshot.pilot.analysis;
+    if (!nextAnalysis) throw new Error("MANUAL_CORRECTION_ANALYSIS_REQUIRED");
+
+    const derived: BrowserAnalysisSnapshot = {
+      ...effective.snapshot,
+      analysisVersionId,
+      createdAt,
+      derivedFromAnalysisVersionId: rootAnalysisVersionId,
+      manualCorrectionRevision: effective.correctionRevision,
+      manualCorrections: appended.history,
+      manualDisplayLabels: effective.displayLabels,
+      manualEvidenceStatusByEntity: effective.evidenceStatusByEntity,
+      // Any earlier confirmation or supplier selection may point to a match
+      // that changed after the corrected text/price was re-evaluated.
+      matchReviews: [],
+      pilot: {
+        ...effective.snapshot.pilot,
+        analysis: {
+          ...nextAnalysis,
+          id: analysisVersionId,
+          generatedAt: createdAt
+        },
+        matchReviewActions: [],
+        supplierDecisions: [],
+        supplierDecisionReviewActions: [],
+        projectReview: {
+          ...effective.snapshot.pilot.projectReview,
+          analysisVersionId
+        }
+      }
+    };
+
+    await this.repositories.analyses.save(derived);
+    const selections = await this.repositories.selections.list(input.projectId);
+    await Promise.all(
+      selections.map((selection) =>
+        this.repositories.selections.delete(input.projectId, selection.positionId)
+      )
+    );
+    await this.updateProject(input.projectId, {
+      activeAnalysisVersionId: analysisVersionId,
+      basisPositionCount: derived.summary.basisPositions,
+      status: "PRÜFUNG_ERFORDERLICH",
+      processingFailureCode: null,
+      lastRoute: "LV_COMPARISON",
+      lastOpenedAt: createdAt
+    });
+    return derived;
+  }
+
+  async listMatchReviews(projectId: string) {
+    return (await this.repositories.analyses.latest(projectId))?.matchReviews ?? [];
+  }
+
+  async reviewMatch(review: BrowserMatchReviewRecord) {
+    const parsed = matchReviewSchema.safeParse(review);
+    if (!parsed.success) throw new Error("INVALID_MATCH_REVIEW");
+    const snapshot = await this.repositories.analyses.get(
+      parsed.data.projectId,
+      parsed.data.analysisVersionId
+    );
+    if (!snapshot) throw new Error("MATCH_REVIEW_ANALYSIS_NOT_FOUND");
+    const updated = applyBrowserMatchReview(snapshot, parsed.data);
+    await this.repositories.analyses.save(updated);
+    return updated;
+  }
+
   currentProcessingRun(projectId: string) {
     return this.repositories.processingRuns.current(projectId);
   }
 
-  saveProcessingRun(
-    run: Parameters<ProjectRepositories["processingRuns"]["save"]>[0]
-  ) {
+  saveProcessingRun(run: Parameters<ProjectRepositories["processingRuns"]["save"]>[0]) {
     return this.repositories.processingRuns.save(run);
   }
 
@@ -671,9 +1242,7 @@ export class BrowserProjectService {
     return this.repositories.selections.list(projectId);
   }
 
-  saveSelection(
-    selection: Parameters<ProjectRepositories["selections"]["save"]>[0]
-  ) {
+  saveSelection(selection: Parameters<ProjectRepositories["selections"]["save"]>[0]) {
     return this.repositories.selections.save(selection);
   }
 
@@ -681,9 +1250,7 @@ export class BrowserProjectService {
     return this.repositories.workspaces.get(projectId);
   }
 
-  saveWorkspace(
-    workspace: Parameters<ProjectRepositories["workspaces"]["save"]>[0]
-  ) {
+  saveWorkspace(workspace: Parameters<ProjectRepositories["workspaces"]["save"]>[0]) {
     return this.repositories.workspaces.save(workspace);
   }
 
@@ -717,10 +1284,9 @@ export class BrowserProjectService {
       ...document,
       ...update,
       manualRoleOverride:
-        update.documentType !== undefined &&
-        update.documentType !== document.detectedDocumentType
+        update.documentType !== undefined && update.documentType !== document.detectedDocumentType
           ? true
-          : update.manualRoleOverride ?? document.manualRoleOverride
+          : (update.manualRoleOverride ?? document.manualRoleOverride)
     };
     const documents = applyAutomaticBasisSelection(
       reconcileDocumentRelations(
@@ -729,9 +1295,7 @@ export class BrowserProjectService {
         )
       )
     );
-    await Promise.all(
-      documents.map((current) => this.repositories.documents.save(current))
-    );
+    await Promise.all(documents.map((current) => this.repositories.documents.save(current)));
     return documents.find((current) => current.documentId === documentId)!;
   }
 
@@ -747,8 +1311,7 @@ export class BrowserProjectService {
     if (
       documents.some(
         (document) =>
-          document.documentId !== documentId &&
-          document.sha256 === prepared.document.sha256
+          document.documentId !== documentId && document.sha256 === prepared.document.sha256
       )
     ) {
       throw new Error("DUPLICATE_PDF");
@@ -766,9 +1329,7 @@ export class BrowserProjectService {
         )
       )
     );
-    await Promise.all(
-      reconciled.map((document) => this.repositories.documents.save(document))
-    );
+    await Promise.all(reconciled.map((document) => this.repositories.documents.save(document)));
     await this.updateProject(projectId, {
       activeAnalysisVersionId: null,
       basisPositionCount: 0,
@@ -781,9 +1342,7 @@ export class BrowserProjectService {
 
   async selectActiveBasis(projectId: string, documentId: string) {
     const documents = await this.repositories.documents.list(projectId);
-    const selected = documents.find(
-      (document) => document.documentId === documentId
-    );
+    const selected = documents.find((document) => document.documentId === documentId);
     if (!selected || selected.documentType !== "BASIS_LV") {
       throw new Error("BASIS_DOCUMENT_REQUIRED");
     }
@@ -794,9 +1353,7 @@ export class BrowserProjectService {
           ? document.documentId === documentId
           : document.activeBasis
     }));
-    await Promise.all(
-      next.map((document) => this.repositories.documents.save(document))
-    );
+    await Promise.all(next.map((document) => this.repositories.documents.save(document)));
     return selected;
   }
 
@@ -809,10 +1366,10 @@ export class BrowserProjectService {
     );
     const relevant = documents.filter(
       (document) =>
+        ["SCAN_OCR_REQUIRED", "UNKNOWN"].includes(document.documentType) ||
         document.discipline === discipline ||
         document.discipline === "MULTI" ||
-        (discipline === "SANITAER" &&
-          document.discipline === "INSTALLATIONSSYSTEME")
+        (discipline === "SANITAER" && document.discipline === "INSTALLATIONSSYSTEME")
     );
     const bases = relevant.filter(
       (document) => document.documentType === "BASIS_LV" && document.activeBasis
@@ -827,40 +1384,53 @@ export class BrowserProjectService {
       );
     }
     const basis = bases[0];
+    const basisNeedsFullOcr = Boolean(
+      basis &&
+        ["OCR_REQUIRED", "OCR_AVAILABLE"].includes(basis.scanState) &&
+        (basis.detectedDocumentType === "BASIS_LV" ||
+          (basis.manualRoleOverride &&
+            !["SUPPLIER_OFFER", "MANUFACTURER_OFFER"].includes(basis.detectedDocumentType)) ||
+          basis.manualBasisOverrideConfirmed)
+    );
     if (
       basis &&
       !isStructurallyPlausibleBasis(basis) &&
-      !basis.manualBasisOverrideConfirmed
+      !basis.manualBasisOverrideConfirmed &&
+      !basisNeedsFullOcr
     ) {
-      blockingReasons.push(
-        "Das aktive Basis-LV besteht die strukturelle Basis-Prüfung nicht."
-      );
+      blockingReasons.push("Das aktive Basis-LV besteht die strukturelle Basis-Prüfung nicht.");
     }
     if (basis && basis.preliminaryPositionCount === 0) {
-      blockingReasons.push(
-        "Im Basis-LV wurde keine vorläufige Positionsstruktur erkannt."
-      );
+      if (basisNeedsFullOcr) {
+        warnings.push(
+          `${basis.originalFileName}: In der Vorschau wurde keine vorläufige Positionsstruktur erkannt; die Voll-OCR prüft automatisch alle Seiten.`
+        );
+      } else {
+        blockingReasons.push("Im Basis-LV wurde keine vorläufige Positionsstruktur erkannt.");
+      }
     }
     for (const document of relevant) {
-      const blob = await this.repositories.documentBlobs.get(
-        projectId,
-        document.documentId
-      );
+      const blob = await this.repositories.documentBlobs.get(projectId, document.documentId);
       if (!blob) {
         blockingReasons.push(`PDF-Datei fehlt: ${document.originalFileName}`);
       }
-      if (
-        document.documentType === "UNKNOWN" ||
-        (document.classificationConfidence === "LOW" &&
-          document.documentType !== "SCAN_OCR_REQUIRED")
-      ) {
-        blockingReasons.push(
-          `Offene Dokumentzuordnung: ${document.originalFileName}`
-        );
-      }
-      if (document.documentType === "SCAN_OCR_REQUIRED") {
+      if (document.documentType === "UNKNOWN" && document.documentId !== basis?.documentId) {
         warnings.push(
-          `${document.originalFileName}: OCR ausstehend, im aktuellen Lauf ausgeschlossen.`
+          `${document.originalFileName}: Dokumentrolle nach Vorschau offen. Die Vollprüfung wird ausgeführt; bei weiterhin unklarer Rolle ist eine manuelle Zuordnung erforderlich.`
+        );
+      } else if (
+        document.classificationConfidence === "LOW" &&
+        document.documentType !== "SCAN_OCR_REQUIRED" &&
+        !(basisNeedsFullOcr && document.documentId === basis?.documentId)
+      ) {
+        blockingReasons.push(`Offene Dokumentzuordnung: ${document.originalFileName}`);
+      }
+      if (
+        document.documentType === "SCAN_OCR_REQUIRED" ||
+        (basisNeedsFullOcr && document.documentId === basis?.documentId)
+      ) {
+        warnings.push(
+          `${document.originalFileName}: OCR wird im Verarbeitungslauf automatisch ausgeführt; Dokumentrolle und Ergebnis anschließend manuell prüfen.`
         );
       }
     }
@@ -880,21 +1450,16 @@ export class BrowserProjectService {
       this.repositories.documentBlobs.delete(projectId, documentId)
     ]);
     const documents = applyAutomaticBasisSelection(
-      reconcileDocumentRelations(
-        await this.repositories.documents.list(projectId)
-      )
+      reconcileDocumentRelations(await this.repositories.documents.list(projectId))
     );
-    await Promise.all(
-      documents.map((document) => this.repositories.documents.save(document))
-    );
+    await Promise.all(documents.map((document) => this.repositories.documents.save(document)));
     await this.updateProject(projectId, {
       status: documents.length ? "DOKUMENTE_GELADEN" : "ENTWURF",
       activeAnalysisVersionId: null,
       basisPositionCount: 0,
       supplierOfferCount: documents.filter(
         (item) =>
-          item.documentType === "SUPPLIER_OFFER" ||
-          item.documentType === "MANUFACTURER_OFFER"
+          item.documentType === "SUPPLIER_OFFER" || item.documentType === "MANUFACTURER_OFFER"
       ).length,
       documentCount: documents.length,
       lastRoute: "DOCUMENT_REVIEW",
@@ -924,10 +1489,7 @@ export class BrowserProjectService {
     try {
       const documents = await this.repositories.documents.list(projectId);
       for (const document of documents) {
-        const blob = await this.repositories.documentBlobs.get(
-          projectId,
-          document.documentId
-        );
+        const blob = await this.repositories.documentBlobs.get(projectId, document.documentId);
         if (!blob) throw new Error("DOCUMENT_BLOB_MISSING");
         await this.repositories.documents.save({
           ...structuredClone(document),
@@ -953,18 +1515,21 @@ export class BrowserProjectService {
           }
         });
       }
-      const selections = await this.repositories.selections.list(projectId);
-      for (const selection of selections) {
-        await this.repositories.selections.save({
-          ...structuredClone(selection),
-          projectId: duplicate.projectId
-        });
-      }
       const workspace = await this.repositories.workspaces.get(projectId);
       if (workspace) {
         await this.repositories.workspaces.save({
           ...structuredClone(workspace),
-          projectId: duplicate.projectId
+          projectId: duplicate.projectId,
+          state: {
+            ...structuredClone(workspace.state),
+            expandedPositionIds: [],
+            selectedBasisPositionId: null,
+            selectedSupplierOptionId: null,
+            inspectorOpen: false,
+            fullscreenSourceOpen: false,
+            warningCenterOpen: false,
+            sourceOverlay: null
+          }
         });
       }
       const finalProject: BrowserProjectRecord = {
@@ -997,10 +1562,7 @@ export class BrowserProjectService {
     const documentBlobs: BrowserProjectBackup["documentBlobs"] = [];
     const checksums: Record<string, string> = {};
     for (const document of documents) {
-      const blob = await this.repositories.documentBlobs.get(
-        projectId,
-        document.documentId
-      );
+      const blob = await this.repositories.documentBlobs.get(projectId, document.documentId);
       if (!blob) throw new Error("DOCUMENT_BLOB_MISSING");
       const bytes = new Uint8Array(await blob.arrayBuffer());
       const digest = await sha256(bytes.buffer);
@@ -1090,13 +1652,16 @@ export class BrowserProjectService {
           !/^[a-f0-9]{64}$/u.test(document.sha256)
       ) ||
       backup.analysisSnapshots.some(
-        (snapshot) => snapshot.projectId !== backup.manifest.projectId
+        (snapshot) =>
+          snapshot.projectId !== backup.manifest.projectId ||
+          snapshot.matchReviews.some(
+            (review) =>
+              review.projectId !== backup.manifest.projectId ||
+              review.analysisVersionId !== snapshot.analysisVersionId
+          )
       ) ||
-      backup.selections.some(
-        (selection) => selection.projectId !== backup.manifest.projectId
-      ) ||
-      (backup.workspace !== null &&
-        backup.workspace.projectId !== backup.manifest.projectId)
+      backup.selections.some((selection) => selection.projectId !== backup.manifest.projectId) ||
+      (backup.workspace !== null && backup.workspace.projectId !== backup.manifest.projectId)
     ) {
       throw new Error("INVALID_PROJECT_BACKUP");
     }
@@ -1126,10 +1691,7 @@ export class BrowserProjectService {
       }
       const buffer = Uint8Array.from(bytes).buffer;
       const digest = await sha256(buffer);
-      if (
-        digest !== backup.manifest.checksums[item.documentId] ||
-        digest !== document.sha256
-      ) {
+      if (digest !== backup.manifest.checksums[item.documentId] || digest !== document.sha256) {
         throw new Error("PROJECT_BACKUP_CHECKSUM_MISMATCH");
       }
       try {
@@ -1144,7 +1706,51 @@ export class BrowserProjectService {
     ) {
       throw new Error("INVALID_PROJECT_BACKUP");
     }
-    backup.project = normalizeBrowserProjectRecord(backup.project);
+    const restoredProjectStatus = backup.documents.some(
+      (document) =>
+        document.processingStatus === "PRÜFUNG_ERFORDERLICH" ||
+        document.documentType === "SCAN_OCR_REQUIRED" ||
+        document.documentType === "UNKNOWN"
+    )
+      ? "PRÜFUNG_ERFORDERLICH"
+      : backup.documents.length > 0
+        ? "DOKUMENTE_GELADEN"
+        : "ENTWURF";
+    backup.project = normalizeBrowserProjectRecord({
+      ...backup.project,
+      activeAnalysisVersionId: null,
+      processingCheckpoint: null,
+      processingFailureCode: null,
+      basisPositionCount: 0,
+      supplierOfferCount: 0,
+      documentCount: backup.documents.length,
+      lastPositionId: null,
+      lastRoute: backup.documents.length > 0 ? "DOCUMENT_REVIEW" : "PROJECT_DOCUMENTS",
+      status: restoredProjectStatus
+    });
+    // Backups are unsigned input. PDFs and strictly validated UI preferences may
+    // be restored, but derived prices, matches and human confirmations must be
+    // regenerated or confirmed in this installation before they become trusted.
+    backup.analysisSnapshots = [];
+    backup.selections = [];
+    if (backup.workspace) {
+      backup.workspace = {
+        ...backup.workspace,
+        state: {
+          ...backup.workspace.state,
+          tableScroll: 0,
+          page: 1,
+          expandedPositionIds: [],
+          selectedBasisPositionId: null,
+          selectedSupplierOptionId: null,
+          inspectorOpen: false,
+          fullscreenSourceOpen: false,
+          warningCenterOpen: false,
+          sourceOverlay: null,
+          sourceViews: {}
+        }
+      };
+    }
     backup.schemaVersion = BROWSER_PROJECT_SCHEMA_VERSION;
     return {
       backup,
@@ -1153,13 +1759,8 @@ export class BrowserProjectService {
         schemaVersion: backup.schemaVersion,
         documentCount: backup.manifest.documentCount,
         basisPositionCount:
-          backup.manifest.basisPositionCount ??
-          backup.project.basisPositionCount ??
-          0,
-        offerCount:
-          backup.manifest.offerCount ??
-          backup.project.supplierOfferCount ??
-          0,
+          backup.manifest.basisPositionCount ?? backup.project.basisPositionCount ?? 0,
+        offerCount: backup.manifest.offerCount ?? backup.project.supplierOfferCount ?? 0,
         exportedAt: backup.exportedAt,
         totalSize:
           backup.manifest.totalSize ??
@@ -1201,6 +1802,10 @@ export class BrowserProjectService {
         await this.repositories.analyses.save({
           ...snapshot,
           projectId,
+          matchReviews: snapshot.matchReviews.map((review) => ({
+            ...review,
+            projectId
+          })),
           pilot: {
             ...snapshot.pilot,
             projectReview: { ...snapshot.pilot.projectReview, projectId }

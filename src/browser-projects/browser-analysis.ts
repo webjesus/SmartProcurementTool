@@ -5,20 +5,58 @@ import type {
   PilotAnalysis,
   SupplierOption
 } from "@/domain/contracts";
+import { buildSupplierOptions, proposeMatches, type OfferLineContext } from "@/domain/matching";
 import {
   selectUniqueLowestComparableOption,
   type PositionSupplierCoverage,
   type ProjectReviewPosition
 } from "@/domain/project-review";
 import type { PilotStateView } from "@/components/lv/types";
-import type { BrowserWorkerResult } from "@/browser-projects/processing-protocol";
+import { applyFullRunDocumentClassification } from "@/browser-projects/document-classification";
+import type {
+  BrowserLineReviewReason,
+  BrowserWorkerResult
+} from "@/browser-projects/processing-protocol";
 import type {
   BrowserAnalysisSnapshot,
-  BrowserDocumentRecord
+  BrowserDocumentRecord,
+  BrowserMatchReviewRecord
 } from "@/browser-projects/types";
 
 function stableId(...parts: string[]): string {
   return parts.join(":").replace(/[^\p{L}\p{N}:._-]/gu, "-");
+}
+
+function explicitManufacturer(description: string): string | null {
+  const value = description.match(/\b(?:Fabrikat|Hersteller)\s*:\s*([^\n]+?)(?=\s+(?:Typ|Art\.?\s*-?\s*Nr\.?|Komplett|Menge|Einheit)\s*:?|\n|$)/iu)?.[1]?.trim();
+  return value && value.length <= 80 && !/gleichwertig|nach\s+wahl/i.test(value) ? value : null;
+}
+
+function supplierRole(description: string): OfferLine["role"] {
+  const text = description.replace(/\s+/g, " ").trim();
+  if (/\b(?:nicht\s+(?:im\s+Lieferprogramm|angeboten|lieferbar)|kein\s+Angebot)\b/i.test(text)) return "NOT_OFFERED";
+  if (/^(?:bauseits|durch\s+andere)\b/i.test(text)) return "PROVIDED_BY_OTHERS";
+  if (/^(?:wahlweise|alternativ(?:e|es|er)?)\b/i.test(text)) return "ALTERNATIVE";
+  if (/^(?:optional(?:e|es|er)?|auf\s+Wunsch)\b/i.test(text)) return "OPTIONAL";
+  if (/\b(?:Preis\s+auf\s+Anfrage|auf\s+Anfrage\s+lieferbar)\b/i.test(text)) return "PRICE_ON_REQUEST";
+  return "PRIMARY";
+}
+
+function basisTechnicalAttributes(description: string): BasisPosition["technicalAttributes"] {
+  const diameters = [...new Set([...description.matchAll(/\bDN\s*(\d{1,3})\b/gi)].map(match => match[1]))];
+  // More than one DN can describe different connections; do not invent one requirement.
+  return diameters.length === 1 ? [{ name: "Nennweite", value: `DN ${diameters[0]}` }] : [];
+}
+
+function fullyReadDocumentIds(documents: readonly BrowserDocumentRecord[], result: BrowserWorkerResult): Set<string> {
+  return new Set(documents.filter(document => {
+    if (["UNKNOWN", "SCAN_OCR_REQUIRED"].includes(document.documentType)) return false;
+    const diagnostic = result.diagnostics.documents.find(item => item.documentId === document.documentId);
+    return diagnostic && diagnostic.pagesInspected >= document.pageCount &&
+      diagnostic.ocrFailedPages === 0 && diagnostic.ocrRequiredPages === 0 &&
+      diagnostic.extractedPositions >= diagnostic.candidatePositions &&
+      !result.processingIssues?.some(issue => issue.documentId === document.documentId);
+  }).map(document => document.documentId));
 }
 
 function evidence(input: {
@@ -27,204 +65,102 @@ function evidence(input: {
   description: string;
   lineIndex: number;
   pageNumber?: number;
+  region?: { x: number; y: number; width: number; height: number };
+  reviewReasons?: BrowserLineReviewReason[];
 }): EvidenceReference {
+  const hasMeasuredRegion = Boolean(
+    input.region && input.region.width > 0 && input.region.height > 0
+  );
+  const requiresStructuralReview = (input.reviewReasons?.length ?? 0) > 0;
+  const geometrySource = !hasMeasuredRegion
+    ? "line"
+    : input.reviewReasons?.includes("OCR_SOURCE")
+      ? "ocr-word"
+      : "pdf-text";
   return {
-    id: stableId("evidence", input.documentId, input.positionNumber),
+    id: stableId("evidence", input.documentId, input.positionNumber, String(input.lineIndex)),
     documentId: input.documentId,
     pageNumber: input.pageNumber ?? 1,
-    textItemIds: [stableId("line", String(input.lineIndex))],
+    // Legacy `line:<n>` IDs denoted placeholder geometry and are deliberately
+    // ignored by the viewer. Measured PDF/OCR boxes use explicit provenance so
+    // an image-only PDF can safely reuse its stored OCR frame when the original
+    // document has no native text layer.
+    textItemIds: [stableId(geometrySource, String(input.lineIndex)), ...(input.reviewReasons ?? []).map(reason => `review:${reason}`)],
     sourceText: input.description,
-    region: {
-      x: 0.08,
-      y: Math.min(0.82, 0.12 + (input.lineIndex % 9) * 0.075),
-      width: 0.84,
-      height: 0.055
-    },
+    region: hasMeasuredRegion ? input.region! : { x: 0, y: 0, width: 0, height: 0 },
     cropPath: null,
-    status: "VERIFIED_NATIVE"
+    status: !hasMeasuredRegion
+      ? "MISSING"
+      : requiresStructuralReview
+        ? "VISUAL_ONLY_UNCONFIRMED"
+        : "VERIFIED_NATIVE"
   };
 }
 
-export function buildBrowserAnalysis(input: {
-  projectId: string;
-  documents: BrowserDocumentRecord[];
-  result: BrowserWorkerResult;
-}): BrowserAnalysisSnapshot {
-  const createdAt = new Date().toISOString();
-  const analysisVersionId = crypto.randomUUID();
-  const basisDocument =
-    input.documents.find(
-      (document) =>
-        document.documentType === "BASIS_LV" && document.activeBasis
-    );
-  if (!basisDocument) throw new Error("BASIS_DOCUMENT_REQUIRED");
-  if (input.result.basisLines.length === 0) {
-    throw new Error("FAILED_NO_BASIS_POSITIONS");
-  }
-  const basisPositions: BasisPosition[] = input.result.basisLines.map((line) => ({
-    id: stableId("basis", line.documentId, line.positionNumber),
-    documentId: line.documentId,
-    parentId: null,
-    positionNumber: line.positionNumber,
-    description: line.description,
-    quantity: line.quantity,
-    unit: line.unit,
-    technicalAttributes: [],
-    manufacturerRequirements: [],
-    requiredScope: [],
-    notes: [],
-    optional: false,
-    alternative: false,
-    heading: false,
-    evidence: [evidence(line)],
-    hierarchyPath: ["Browser-lokales Leistungsverzeichnis"],
-    verificationStatus: "MACHINE_VALIDATED"
-  }));
-  const offerLines = new Map<string, OfferLine>();
-  for (const line of input.result.supplierLines) {
-    const lineEvidence = evidence(line);
-    const id = stableId(
-      "supplier-line",
-      line.documentId,
-      line.positionNumber,
-      String(line.lineIndex)
-    );
-    offerLines.set(id, {
-      id,
-      sourcePositionNumber: line.positionNumber,
-      supplierPositionNumber: line.positionNumber,
-      description: line.description,
-      manufacturer: null,
-      articleNumber: line.articleNumber,
-      quantity: line.quantity,
-      unit: line.unit,
-      priceBasis: 1,
-      currency: "EUR",
-      moneyCandidates:
-        line.totalPrice === null
-          ? []
-          : [
-              {
-                id: stableId("money", id),
-                kind: "TOTAL_PRICE",
-                rawValue: String(line.totalPrice),
-                amount: line.totalPrice,
-                currency: "EUR",
-                priceBasis: 1,
-                evidence: [lineEvidence]
-              }
-            ],
-      interpretedUnitPrice: line.unitPrice,
-      interpretedTotalPrice: line.totalPrice,
-      role: "PRIMARY",
-      groupId: stableId("group", line.documentId),
-      continuation: false,
-      evidence: [lineEvidence],
-      verificationStatus: "MACHINE_VALIDATED",
-      lockedFields: [],
-      completenessStatus:
-        line.totalPrice === null ? "OFFER_WITHOUT_PRICE" : "PRICED_OFFER"
-    });
-  }
-  const supplierOptions: SupplierOption[] = [];
-  for (const basis of basisPositions) {
-    for (const parsed of input.result.supplierLines.filter(
-      (line) => line.positionNumber === basis.positionNumber
-    )) {
-      const lineId = stableId(
-        "supplier-line",
-        parsed.documentId,
-        parsed.positionNumber,
-        String(parsed.lineIndex)
-      );
-      const line = offerLines.get(lineId)!;
-      const comparableTotal =
-        line.interpretedTotalPrice ??
-        (line.interpretedUnitPrice !== null && basis.quantity !== null
-          ? Math.round(line.interpretedUnitPrice * basis.quantity * 100) / 100
-          : null);
-      supplierOptions.push({
-        id: stableId("option", basis.id, parsed.documentId, lineId),
-        basisPositionIds: [basis.id],
-        supplierDocumentId: parsed.documentId,
-        supplierLabel: parsed.supplier,
-        matchedOfferLineIds: [lineId],
-        matchLinkIds: [stableId("match", basis.id, lineId)],
-        primaryPrice: comparableTotal,
-        mandatoryComponentPrices: [],
-        optionalPrices: [],
-        pricedTotal: comparableTotal,
-        comparableTotal,
-        quantity: parsed.quantity,
-        unit: parsed.unit,
-        scopeOfSupply: [parsed.description],
-        technicalDeviations: [],
-        missingComponents: [],
-        validationIssueIds: [],
-        evidenceIds: line.evidence.map((item) => item.id),
-        quantityCompatible:
-          basis.quantity === null ||
-          parsed.quantity === null ||
-          basis.quantity === parsed.quantity,
-        unitCompatible:
-          basis.unit === null ||
-          parsed.unit === null ||
-          basis.unit.toLocaleLowerCase("de") === parsed.unit.toLocaleLowerCase("de"),
-        technicalCompatible: true,
-        technicalComparisonStatus: "CONFIRMED_COMPATIBLE",
-        unresolvedTechnicalAttributes: [],
-        requiredScopeComplete: true,
-        optionalSeparated: true,
-        bundleCompatible: true,
-        evidenceSufficient: true,
-        extractionValidated: true,
-        matchingAccepted: true,
-        matchingReliable: true,
-        offerAvailability: "PRESENT",
-        materialScopeStatus: "COMPLETE_MATERIAL_SCOPE",
-        reasons: [
-          "Menge stimmt überein",
-          "Einheit stimmt überein",
-          "Preis vollständig bestätigt"
-        ],
-        status: comparableTotal === null ? "PRICE_UNCLEAR" : "CLEAR_RECOMMENDATION"
-      });
-    }
-  }
-  const supplierDocuments = input.documents.filter((document) =>
-    ["SUPPLIER_OFFER", "MANUFACTURER_OFFER"].includes(document.documentType)
+function continuationEvidence(input: {
+  documentId: string;
+  positionNumber: string;
+  lineIndex: number;
+  reviewReasons?: BrowserLineReviewReason[];
+  continuationEvidence?: Array<{
+    pageNumber: number;
+    sourceText: string;
+    region?: { x: number; y: number; width: number; height: number };
+  }>;
+}): EvidenceReference[] {
+  return (input.continuationEvidence ?? []).map((continuation, index) =>
+    evidence({
+      documentId: input.documentId,
+      positionNumber: input.positionNumber,
+      description: continuation.sourceText,
+      lineIndex: input.lineIndex * 1_000 + index + 1,
+      pageNumber: continuation.pageNumber,
+      region: continuation.region,
+      reviewReasons: input.reviewReasons
+    })
   );
-  const reviewPositions: ProjectReviewPosition[] = basisPositions.map((basis) => {
-    const options = supplierOptions.filter((option) =>
+}
+
+function buildReviewPositions(input: {
+  projectId: string;
+  analysisVersionId: string;
+  basisPositions: BasisPosition[];
+  supplierOptions: SupplierOption[];
+  supplierDocuments: Array<Pick<BrowserDocumentRecord, "documentId">>;
+  fullyProcessedDocumentIds: ReadonlySet<string>;
+  calculatedAt: string;
+}): ProjectReviewPosition[] {
+  return input.basisPositions.map((basis) => {
+    const options = input.supplierOptions.filter((option) =>
       option.basisPositionIds.includes(basis.id)
     );
-    const explicitNoOfferSuppliers: string[] = [];
+    const explicitNoOfferSuppliers = options.filter(option => option.offerAvailability === "EXPLICIT_NO_OFFER").map(option => option.supplierDocumentId);
+    const missingSuppliers = input.supplierDocuments.filter(document => !input.fullyProcessedDocumentIds.has(document.documentId));
+    const allRelevantOffersProcessed = missingSuppliers.length === 0;
     const coverage: PositionSupplierCoverage = {
       basisPositionId: basis.id,
-      relevantSuppliers: supplierDocuments.map((document) => document.documentId),
-      processedRelevantSuppliers: supplierDocuments.map(
-        (document) => document.documentId
-      ),
+      relevantSuppliers: input.supplierDocuments.map((document) => document.documentId),
+      processedRelevantSuppliers: input.supplierDocuments.filter(document => input.fullyProcessedDocumentIds.has(document.documentId)).map((document) => document.documentId),
       irrelevantSpecializedSuppliers: [],
       explicitNoOfferSuppliers,
-      missingExpectedSuppliers: [],
-      missingSources: [],
-      coverageStatus: "SUFFICIENT"
+      missingExpectedSuppliers: missingSuppliers.map(document => document.documentId),
+      missingSources: missingSuppliers.map(document => ({ supplierDocumentId: document.documentId, pages: [] })),
+      coverageStatus: allRelevantOffersProcessed ? "SUFFICIENT" : "PARTIAL"
     };
     const independent = selectUniqueLowestComparableOption({
       basisPositionId: basis.id,
       options,
       coverage: {
         activeSupplierDocumentIds: new Set(
-          supplierDocuments.map((document) => document.documentId)
+          input.supplierDocuments.map((document) => document.documentId)
         ),
-        allRelevantOffersProcessed: true,
-        supplierCoverageSufficient: true,
+        allRelevantOffersProcessed,
+        supplierCoverageSufficient: allRelevantOffersProcessed,
         projectContextConfirmed: true,
         disciplineContextConfirmed: true,
         materialUncertainty: false
       },
-      calculatedAt: createdAt
+      calculatedAt: input.calculatedAt
     });
     return {
       basis,
@@ -245,26 +181,184 @@ export function buildBrowserAnalysis(input: {
           : independent.status === "AUTO_SELECTED_LOWEST_PRICE"
             ? "AUTO_SELECTED_LOWEST_PRICE"
             : "MANUAL_DECISION_REQUIRED",
-      reviewQueue:
-        independent.status === "AUTO_SELECTED_LOWEST_PRICE"
-          ? null
-          : "MANAGER_DECISION",
-      primaryReasonCategory:
-        independent.status === "AUTO_SELECTED_LOWEST_PRICE" ? null : "OTHER",
+      reviewQueue: independent.status === "AUTO_SELECTED_LOWEST_PRICE" ? null : "MANAGER_DECISION",
+      primaryReasonCategory: independent.status === "AUTO_SELECTED_LOWEST_PRICE" ? null : "OTHER",
       primaryReasonDe:
         independent.status === "AUTO_SELECTED_LOWEST_PRICE"
           ? null
           : "Angebotsauswahl erfordert eine Entscheidung"
     };
   });
+}
+
+function recommendationsFor(positions: ProjectReviewPosition[]): PilotAnalysis["recommendations"] {
+  return positions.map((position) => ({
+    basisPositionId: position.basis.id,
+    status:
+      position.liveStatus === "AUTO_SELECTED_LOWEST_PRICE"
+        ? "CLEAR_RECOMMENDATION"
+        : position.options.some((option) => option.offerAvailability === "PRESENT")
+          ? "DECISION_REQUIRED"
+          : "NO_OFFER",
+    recommendedSupplierDocumentId: position.independent.selectedSupplierOptionId
+      ? (position.options.find(
+          (option) => option.id === position.independent.selectedSupplierOptionId
+        )?.supplierDocumentId ?? null)
+      : null,
+    reasons: position.independent.reasons,
+    requiresOperatorConfirmation: position.liveStatus !== "AUTO_SELECTED_LOWEST_PRICE"
+  }));
+}
+
+export function buildBrowserAnalysis(input: {
+  projectId: string;
+  documents: BrowserDocumentRecord[];
+  result: BrowserWorkerResult;
+}): BrowserAnalysisSnapshot {
+  const classifications = new Map(input.result.documentClassifications?.map(item => [item.documentId, item.classification]) ?? []);
+  input = { ...input, documents: input.documents.map(document => {
+    const classification = classifications.get(document.documentId);
+    return classification ? applyFullRunDocumentClassification(document, classification) : document;
+  }) };
+  const createdAt = new Date().toISOString();
+  const analysisVersionId = crypto.randomUUID();
+  const basisDocument = input.documents.find(
+    (document) => document.documentType === "BASIS_LV" && document.activeBasis
+  );
+  if (!basisDocument) throw new Error("BASIS_DOCUMENT_REQUIRED");
+  if (input.result.basisLines.length === 0) {
+    throw new Error("FAILED_NO_BASIS_POSITIONS");
+  }
+  const allSupplierDocuments = input.documents.filter(document =>
+    !document.excludedFromProcessing && ["SUPPLIER_OFFER", "MANUFACTURER_OFFER"].includes(document.documentType));
+  const supplierIds = new Set(allSupplierDocuments.map(document => document.documentId));
+  if (input.documents.some(document => document.projectId !== input.projectId) ||
+    input.result.basisLines.some(line => line.documentId !== basisDocument.documentId) ||
+    input.result.supplierLines.some(line => !supplierIds.has(line.documentId))) {
+    throw new Error("EXTRACTION_DOCUMENT_MISMATCH");
+  }
+  const inDiscipline = (document: BrowserDocumentRecord) => document.discipline === "UNKNOWN" ||
+    basisDocument.discipline === "UNKNOWN" || document.discipline === basisDocument.discipline ||
+    (basisDocument.discipline === "SANITAER" && document.discipline === "INSTALLATIONSSYSTEME");
+  const supplierDocuments = allSupplierDocuments.filter(inDiscipline);
+  const relevantIds = new Set(supplierDocuments.map(document => document.documentId));
+  const fullyProcessedDocumentIds = fullyReadDocumentIds(input.documents, input.result);
+  const relevantSupplierDocuments = input.documents.filter(document => !document.excludedFromProcessing && inDiscipline(document) &&
+    ["SUPPLIER_OFFER", "MANUFACTURER_OFFER", "UNKNOWN", "SCAN_OCR_REQUIRED"].includes(document.documentType));
+  const basisPositions: BasisPosition[] = input.result.basisLines.map((line) => {
+    const lineEvidence = evidence(line);
+    const continuation = continuationEvidence(line);
+    return {
+      id: stableId("basis", line.documentId, line.positionNumber),
+      documentId: line.documentId,
+      parentId: null,
+      positionNumber: line.positionNumber,
+      description: line.description,
+      quantity: line.quantity,
+      unit: line.unit,
+      technicalAttributes: basisTechnicalAttributes(line.description),
+      manufacturerRequirements: explicitManufacturer(line.description) ? [explicitManufacturer(line.description)!] : [],
+      requiredScope: [],
+      notes: [],
+      optional: false,
+      alternative: false,
+      heading: false,
+      evidence: [lineEvidence],
+      continuationEvidence: continuation,
+      hierarchyPath: ["Browser-lokales Leistungsverzeichnis"],
+      verificationStatus:
+        lineEvidence.status === "VERIFIED_NATIVE" ? "MACHINE_VALIDATED" : "NEEDS_REVIEW"
+    };
+  });
+  const offerLines = new Map<string, OfferLine>();
+  for (const line of input.result.supplierLines) {
+    if (!relevantIds.has(line.documentId)) continue;
+    const lineEvidence = evidence(line);
+    const lineContinuationEvidence = continuationEvidence(line);
+    const allLineEvidence = [lineEvidence, ...lineContinuationEvidence];
+    const role = supplierRole(line.description);
+    const id = stableId(
+      "supplier-line",
+      line.documentId,
+      line.positionNumber,
+      String(line.lineIndex)
+    );
+    offerLines.set(id, {
+      id,
+      sourcePositionNumber: line.positionNumber,
+      supplierPositionNumber: line.supplierPositionNumber ?? line.positionNumber,
+      description: line.description,
+      manufacturer: explicitManufacturer(line.description),
+      articleNumber: line.articleNumber,
+      quantity: line.quantity,
+      unit: line.unit,
+      priceBasis: line.priceBasis === undefined ? 1 : line.priceBasis === 1 || line.priceBasis === 10 || line.priceBasis === 100 || line.priceBasis === 1000 ? line.priceBasis : null,
+      currency: "EUR",
+      moneyCandidates:
+        line.totalPrice === null
+          ? []
+          : [
+              {
+                id: stableId("money", id),
+                kind: "TOTAL_PRICE",
+                rawValue: String(line.totalPrice),
+                amount: line.totalPrice,
+                currency: "EUR",
+                priceBasis: 1,
+                evidence: allLineEvidence
+              }
+            ],
+      interpretedUnitPrice: line.unitPrice,
+      interpretedTotalPrice: line.totalPrice,
+      role,
+      groupId: stableId("group", line.documentId),
+      continuation: false,
+      evidence: allLineEvidence,
+      verificationStatus:
+        lineEvidence.status === "VERIFIED_NATIVE" ? "MACHINE_VALIDATED" : "NEEDS_REVIEW",
+      lockedFields: [],
+      completenessStatus: ["NOT_OFFERED", "PROVIDED_BY_OTHERS"].includes(role) ? "NOT_OFFERED" : role === "PRICE_ON_REQUEST" ? "PRICE_ON_REQUEST" : line.totalPrice === null ? "OFFER_WITHOUT_PRICE" : "PRICED_OFFER"
+    });
+  }
+  const supplierLabels = new Map(
+    input.result.supplierLines.map((line) => [line.documentId, line.supplier])
+  );
+  const supplierDocumentLabels = new Map(
+    supplierDocuments.map((document) => [
+      document.documentId,
+      document.supplierName ?? document.originalFileName
+    ])
+  );
+  const offerContexts: OfferLineContext[] = [...offerLines.values()].map((line) => {
+    const documentId = line.evidence[0]?.documentId ?? "";
+    return {
+      documentId,
+      documentLabel:
+        supplierLabels.get(documentId) ?? supplierDocumentLabels.get(documentId) ?? documentId,
+      line
+    };
+  });
+  const matchLinks = proposeMatches(basisPositions, offerContexts);
+  const supplierOptions = buildSupplierOptions({
+    basisPositions,
+    offers: offerContexts,
+    links: matchLinks,
+    fullyProcessedSupplierDocumentIds: fullyProcessedDocumentIds
+  });
+  const reviewPositions = buildReviewPositions({
+    projectId: input.projectId,
+    analysisVersionId,
+    basisPositions,
+    supplierOptions,
+    supplierDocuments: relevantSupplierDocuments,
+    fullyProcessedDocumentIds,
+    calculatedAt: createdAt
+  });
   const analysis: PilotAnalysis = {
     id: analysisVersionId,
     basisDocumentId: basisDocument.documentId,
     basisDocumentLabel: basisDocument.originalFileName,
-    basisPages: Array.from(
-      { length: basisDocument.pageCount },
-      (_, index) => index + 1
-    ),
+    basisPages: Array.from({ length: basisDocument.pageCount }, (_, index) => index + 1),
     basisPositionFrom: basisPositions[0]?.positionNumber ?? "",
     basisPositionTo: basisPositions.at(-1)?.positionNumber ?? "",
     supplierDocuments: supplierDocuments.map((document) => ({
@@ -273,36 +367,9 @@ export function buildBrowserAnalysis(input: {
       pages: Array.from({ length: document.pageCount }, (_, index) => index + 1)
     })),
     basisPositions,
-    matchLinks: supplierOptions.map((option) => ({
-      id: option.matchLinkIds[0],
-      basisPositionIds: option.basisPositionIds,
-      offerLineIds: option.matchedOfferLineIds,
-      kind: "ONE_TO_ONE",
-      status: "EXACT",
-      score: 1,
-      reasons: ["Positionsnummer stimmt überein"],
-      confirmedByOperator: false
-    })),
+    matchLinks,
     supplierOptions,
-    recommendations: reviewPositions.map((position) => ({
-      basisPositionId: position.basis.id,
-      status:
-        position.liveStatus === "AUTO_SELECTED_LOWEST_PRICE"
-          ? "CLEAR_RECOMMENDATION"
-          : position.options.length
-            ? "DECISION_REQUIRED"
-            : "NO_OFFER",
-      recommendedSupplierDocumentId:
-        position.independent.selectedSupplierOptionId
-          ? position.options.find(
-              (option) =>
-                option.id === position.independent.selectedSupplierOptionId
-            )?.supplierDocumentId ?? null
-          : null,
-      reasons: position.independent.reasons,
-      requiresOperatorConfirmation:
-        position.liveStatus !== "AUTO_SELECTED_LOWEST_PRICE"
-    })),
+    recommendations: recommendationsFor(reviewPositions),
     generatedAt: createdAt
   };
   const documentRevisions = Object.fromEntries(
@@ -329,7 +396,7 @@ export function buildBrowserAnalysis(input: {
               ? [
                   {
                     lines: [...offerLines.values()].filter((line) =>
-                      line.id.includes(document.documentId)
+                      line.evidence[0]?.documentId === document.documentId
                     )
                   }
                 ]
@@ -370,20 +437,16 @@ export function buildBrowserAnalysis(input: {
         problemPositionIds: []
       },
       coverage: {
-        relevantSupplierDocumentIds: supplierDocuments.map(
-          (document) => document.documentId
-        ),
-        relevantSupplierDocuments: supplierDocuments.map((document) => ({
+        relevantSupplierDocumentIds: relevantSupplierDocuments.map((document) => document.documentId),
+        relevantSupplierDocuments: relevantSupplierDocuments.map((document) => ({
           id: document.documentId,
           label: document.originalFileName,
           supplier: document.supplierName ?? document.originalFileName,
           revision: document.revision ?? 0
         })),
-        processedSupplierDocumentIds: supplierDocuments.map(
-          (document) => document.documentId
-        ),
-        missingSupplierDocuments: [],
-        allRelevantOffersProcessed: true,
+        processedSupplierDocumentIds: supplierDocuments.filter(document => fullyProcessedDocumentIds.has(document.documentId)).map((document) => document.documentId),
+        missingSupplierDocuments: relevantSupplierDocuments.filter(document => !fullyProcessedDocumentIds.has(document.documentId)).map(document => ({ id: document.documentId, label: document.originalFileName })),
+        allRelevantOffersProcessed: relevantSupplierDocuments.every(document => fullyProcessedDocumentIds.has(document.documentId)),
         projectContextConfirmed: true,
         historicalCalculationAvailable: false
       }
@@ -393,20 +456,127 @@ export function buildBrowserAnalysis(input: {
     projectId: input.projectId,
     analysisVersionId,
     createdAt,
+    matchReviews: [],
     pilot,
     summary: {
       basisPositions: basisPositions.length,
       supplierOffers: supplierDocuments.length,
-      positionsWithOffers: reviewPositions.filter(
-        (position) => position.options.length > 0
-      ).length,
-      positionsWithoutOffers: reviewPositions.filter(
-        (position) => position.options.length === 0
-      ).length,
+      positionsWithOffers: reviewPositions.filter((position) => position.options.length > 0).length,
+      positionsWithoutOffers: reviewPositions.filter((position) => position.options.length === 0)
+        .length,
       warnings: input.result.warnings.length,
       pagesInspected: input.result.diagnostics.pagesInspected,
       pagesParsed: input.result.diagnostics.pagesParsed,
-      ocrRequiredPages: input.result.diagnostics.ocrRequiredPages
+      ocrRequiredPages: input.result.diagnostics.ocrRequiredPages,
+      ocrProcessedPages: input.result.diagnostics.ocrProcessedPages ?? 0,
+      ocrFailedPages: input.result.diagnostics.ocrFailedPages ?? 0,
+      documentDiagnostics: structuredClone(input.result.diagnostics.documents)
+    }
+  };
+}
+
+export function applyBrowserMatchReview(
+  snapshot: BrowserAnalysisSnapshot,
+  review: BrowserMatchReviewRecord
+): BrowserAnalysisSnapshot {
+  if (
+    review.projectId !== snapshot.projectId ||
+    review.analysisVersionId !== snapshot.analysisVersionId
+  ) {
+    throw new Error("MATCH_REVIEW_ANALYSIS_MISMATCH");
+  }
+  const analysis = snapshot.pilot.analysis;
+  if (!analysis) throw new Error("MATCH_REVIEW_ANALYSIS_REQUIRED");
+  const target = analysis.matchLinks.find(
+    (link) => link.id === review.matchLinkId && link.basisPositionIds.includes(review.positionId)
+  );
+  if (!target) throw new Error("MATCH_LINK_NOT_FOUND");
+
+  const manualReasons = new Set(["Zuordnung manuell bestätigt", "Zuordnung manuell abgelehnt"]);
+  const matchLinks = analysis.matchLinks.map((link) => {
+    if (link.id !== target.id) return link;
+    const reasons = link.reasons.filter((reason) => !manualReasons.has(reason));
+    const direct = reasons.includes("Direkter LV-Positionsbezug");
+    return {
+      ...link,
+      status:
+        review.decision === "REJECTED"
+          ? ("UNMATCHED" as const)
+          : link.status === "UNMATCHED"
+            ? direct
+              ? ("EXACT" as const)
+              : ("PROBABLE" as const)
+            : link.status,
+      reasons: [
+        ...reasons,
+        review.decision === "CONFIRMED"
+          ? "Zuordnung manuell bestätigt"
+          : "Zuordnung manuell abgelehnt"
+      ],
+      confirmedByOperator: review.decision === "CONFIRMED"
+    };
+  });
+  const supplierLabels = new Map(
+    snapshot.pilot.projectReview.coverage.relevantSupplierDocuments.map((document) => [
+      document.id,
+      document.supplier
+    ])
+  );
+  const offerContexts: OfferLineContext[] = snapshot.pilot.runs.flatMap((run) =>
+    run.result.envelope.extraction.offerGroups.flatMap((group) =>
+      group.lines.map((line) => ({
+        documentId: run.document.id,
+        documentLabel: supplierLabels.get(run.document.id) ?? run.document.relativePath,
+        line
+      }))
+    )
+  );
+  const supplierOptions = buildSupplierOptions({
+    basisPositions: analysis.basisPositions,
+    offers: offerContexts,
+    links: matchLinks,
+    fullyProcessedSupplierDocumentIds: new Set(snapshot.pilot.projectReview.coverage.processedSupplierDocumentIds)
+  });
+  const positions = buildReviewPositions({
+    projectId: snapshot.projectId,
+    analysisVersionId: snapshot.analysisVersionId,
+    basisPositions: analysis.basisPositions,
+    supplierOptions,
+    supplierDocuments: snapshot.pilot.projectReview.coverage.relevantSupplierDocumentIds.map(documentId => ({ documentId })),
+    fullyProcessedDocumentIds: new Set(snapshot.pilot.projectReview.coverage.processedSupplierDocumentIds),
+    calculatedAt: review.updatedAt
+  });
+  const nextAnalysis: PilotAnalysis = {
+    ...analysis,
+    matchLinks,
+    supplierOptions,
+    recommendations: recommendationsFor(positions),
+    generatedAt: review.updatedAt
+  };
+  return {
+    ...snapshot,
+    matchReviews: [
+      ...(snapshot.matchReviews ?? []).filter(
+        (candidate) => candidate.matchLinkId !== review.matchLinkId
+      ),
+      review
+    ],
+    pilot: {
+      ...snapshot.pilot,
+      analysis: nextAnalysis,
+      projectReview: {
+        ...snapshot.pilot.projectReview,
+        positions
+      }
+    },
+    summary: {
+      ...snapshot.summary,
+      positionsWithOffers: positions.filter((position) =>
+        position.options.some((option) => option.offerAvailability === "PRESENT")
+      ).length,
+      positionsWithoutOffers: positions.filter(
+        (position) => !position.options.some((option) => option.offerAvailability === "PRESENT")
+      ).length
     }
   };
 }
@@ -415,43 +585,55 @@ export function browserWorkerResultFromAnalysis(
   snapshot: BrowserAnalysisSnapshot,
   documents: readonly BrowserDocumentRecord[]
 ): BrowserWorkerResult {
-  const metadata = new Map(
-    documents.map((document) => [document.documentId, document])
-  );
-  const basisLines = snapshot.pilot.projectReview.positions.map(
-    (position, lineIndex) => ({
-      documentId: position.basis.documentId,
-      positionNumber: position.basis.positionNumber,
-      description: position.basis.description,
-      quantity: position.basis.quantity,
-      unit: position.basis.unit,
-      pageNumber: position.basis.evidence[0]?.pageNumber ?? 1,
-      lineIndex
-    })
-  );
+  const metadata = new Map(documents.map((document) => [document.documentId, document]));
+  const sourceFields = (sources: EvidenceReference[], quantity: number | null, unit: string | null) => {
+    const knownReasons = new Set<string>(["PRIOR_REVIEW_REQUIRED", "BARE_POSITION_SINGLETON", "UNKNOWN_UNIT", "QUANTITY_MISSING", "QUANTITY_AMBIGUOUS", "PRICE_BASIS_UNCLEAR", "MULTI_PAGE_POSITION", "DESCRIPTION_LIMIT_REACHED", "OCR_SOURCE", "SOURCE_REGION_MISSING"]);
+    const reviewReasons: BrowserLineReviewReason[] = sources.flatMap(source => source.textItemIds.filter(id => id.startsWith("review:")).map(id => id.slice(7))).filter((reason): reason is BrowserLineReviewReason => knownReasons.has(reason));
+    if (sources.some(source => ["VISUAL_ONLY_UNCONFIRMED", "CONFLICTING"].includes(source.status)) && reviewReasons.length === 0) reviewReasons.push("PRIOR_REVIEW_REQUIRED");
+    if (sources.some(source => source.textItemIds.some(id => id.startsWith("ocr-word:")))) reviewReasons.push("OCR_SOURCE");
+    if (quantity === null) reviewReasons.push("QUANTITY_MISSING");
+    if (unit === null) reviewReasons.push("UNKNOWN_UNIT");
+    if (sources.length > 1) reviewReasons.push("MULTI_PAGE_POSITION");
+    if (!sources[0]?.region.width || !sources[0]?.region.height) reviewReasons.push("SOURCE_REGION_MISSING");
+    return {
+      region: sources[0]?.region,
+      reviewReasons,
+      continuationEvidence: sources.slice(1).map(source => ({ pageNumber: source.pageNumber, sourceText: source.sourceText, region: source.region }))
+    };
+  };
+  const basisLines = snapshot.pilot.projectReview.positions.map((position, lineIndex) => ({
+    documentId: position.basis.documentId,
+    positionNumber: position.basis.positionNumber,
+    description: position.basis.description,
+    quantity: position.basis.quantity,
+    unit: position.basis.unit,
+    pageNumber: position.basis.evidence[0]?.pageNumber ?? 1,
+    lineIndex,
+    ...sourceFields([...position.basis.evidence, ...(position.basis.continuationEvidence ?? [])], position.basis.quantity, position.basis.unit)
+  }));
   let fallbackLineIndex = 0;
   const supplierLines = snapshot.pilot.runs.flatMap((run) =>
     run.result.envelope.extraction.offerGroups.flatMap((group) =>
       group.lines.map((line) => {
         const storedLineIndex = Number(line.id.split(":").at(-1));
         return {
-        documentId: run.document.id,
-        positionNumber:
-          line.supplierPositionNumber ?? line.sourcePositionNumber ?? "",
-        description: line.description,
-        quantity: line.quantity,
-        unit: line.unit,
-        pageNumber: line.evidence[0]?.pageNumber ?? 1,
-        lineIndex: Number.isInteger(storedLineIndex)
-          ? storedLineIndex
-          : fallbackLineIndex++,
-        supplier:
-          metadata.get(run.document.id)?.supplierName ??
-          metadata.get(run.document.id)?.originalFileName ??
-          run.document.relativePath,
-        articleNumber: line.articleNumber,
-        unitPrice: line.interpretedUnitPrice,
-        totalPrice: line.interpretedTotalPrice
+          documentId: run.document.id,
+          positionNumber: line.sourcePositionNumber ?? line.supplierPositionNumber ?? "",
+          supplierPositionNumber: line.supplierPositionNumber,
+          description: line.description,
+          quantity: line.quantity,
+          unit: line.unit,
+          priceBasis: line.priceBasis,
+          ...sourceFields(line.evidence, line.quantity, line.unit),
+          pageNumber: line.evidence[0]?.pageNumber ?? 1,
+          lineIndex: Number.isInteger(storedLineIndex) ? storedLineIndex : fallbackLineIndex++,
+          supplier:
+            metadata.get(run.document.id)?.supplierName ??
+            metadata.get(run.document.id)?.originalFileName ??
+            run.document.relativePath,
+          articleNumber: line.articleNumber,
+          unitPrice: line.interpretedUnitPrice,
+          totalPrice: line.interpretedTotalPrice
         };
       })
     )
@@ -464,7 +646,10 @@ export function browserWorkerResultFromAnalysis(
       pagesInspected: snapshot.summary.pagesInspected ?? 0,
       pagesParsed: snapshot.summary.pagesParsed ?? 0,
       ocrRequiredPages: snapshot.summary.ocrRequiredPages ?? 0,
-      matchingCandidates: supplierLines.length
+      ocrProcessedPages: snapshot.summary.ocrProcessedPages ?? 0,
+      ocrFailedPages: snapshot.summary.ocrFailedPages ?? 0,
+      matchingCandidates: supplierLines.length,
+      documents: structuredClone(snapshot.summary.documentDiagnostics ?? [])
     }
   };
 }

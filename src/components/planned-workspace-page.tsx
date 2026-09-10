@@ -20,7 +20,7 @@ export function PlannedWorkspacePage({
       <section>
         <span className="empty-bookmark"><Construction size={27} /></span>
         <div>
-          <strong>Für ein folgendes MVP-Paket vorgesehen</strong>
+          <strong>Noch nicht verfügbar</strong>
           <p>{boundary}</p>
         </div>
       </section>

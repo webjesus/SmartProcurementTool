@@ -15,6 +15,8 @@ export default defineConfig([
     "storage/**",
     "tmp/**",
     "pdffirma/**",
-    ".postgres-local/**"
+    ".postgres-local/**",
+    "public/ocr/**",
+    "public/pdfjs/**"
   ])
 ]);

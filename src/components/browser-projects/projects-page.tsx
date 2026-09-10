@@ -270,9 +270,9 @@ export function ProjectsPage() {
       </header>
 
       <aside className="browser-local-prototype-note" role="note">
-        Browserlokaler Projekt-Prototyp: Diese Liste wird noch nicht zwischen
-        Arbeitsplätzen synchronisiert. Der gemeinsame Server-Speicher ist ein
-        separates MVP-Paket.
+        Lokal gespeichert: Diese Liste wird noch nicht zwischen
+        Arbeitsplätzen synchronisiert. Gemeinsamer Server-Speicher ist noch
+        nicht verfügbar. Sichern Sie wichtige Projekte regelmäßig.
       </aside>
 
       <div className="projects-toolbar">

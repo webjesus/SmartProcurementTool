@@ -37,7 +37,7 @@ test("dark theme keeps project directory and creation form readable", async ({
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   await expect(page.getByRole("heading", { name: "Projekte" })).toBeVisible();
   await expect(page.getByRole("note")).toContainText(
-    "Browserlokaler Projekt-Prototyp"
+    "Lokal gespeichert"
   );
   await page.locator(".projects-primary-action").click();
   await expect(

@@ -6,11 +6,7 @@ export type DisplayRequirement = {
 };
 
 function comparable(value: string): string {
-  return value
-    .normalize("NFKC")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLocaleLowerCase("de");
+  return value.normalize("NFKC").replace(/\s+/g, " ").trim().toLocaleLowerCase("de");
 }
 
 function escapeRegExp(value: string): string {
@@ -22,10 +18,7 @@ function collapseAdjacentDuplicateWords(value: string): string {
   let previous = "";
   while (result !== previous) {
     previous = result;
-    result = result.replace(
-      /\b([\p{L}][\p{L}\p{M}-]*)\s+\1\b/giu,
-      "$1"
-    );
+    result = result.replace(/\b([\p{L}][\p{L}\p{M}-]*)\s+\1\b/giu, "$1");
   }
   return result;
 }
@@ -47,10 +40,7 @@ function collapseAdjacentDuplicateSentences(value: string): string {
  * Presentation-only cleanup. It deliberately does not parse, round or replace
  * extracted values and must never be persisted back into extraction records.
  */
-export function normalizeDisplayText(
-  raw: string,
-  positionNumber?: string
-): string {
+export function normalizeDisplayText(raw: string, positionNumber?: string): string {
   const normalizedLines = raw
     .replace(/\u00a0/g, " ")
     .replace(/\r\n?/g, "\n")
@@ -65,14 +55,12 @@ export function normalizeDisplayText(
 
   if (positionNumber) {
     const number = escapeRegExp(positionNumber.trim().replace(/\.$/, ""));
-    const repeatedPosition = new RegExp(
-      `^(?:${number}\\.?\\s*){1,}`,
-      "i"
-    );
+    const repeatedPosition = new RegExp(`^(?:${number}\\.?\\s*){1,}`, "i");
     result = result.replace(repeatedPosition, "").trim();
   }
 
   result = collapseAdjacentDuplicateSentences(result)
+    .replace(/^[\-–—•·:;]+\s*/, "")
     .replace(/\s+([,;:!?])/g, "$1")
     .replace(/\s+\./g, ".")
     .replace(/\s+/g, " ")
@@ -81,10 +69,7 @@ export function normalizeDisplayText(
   return collapseAdjacentDuplicateWords(result);
 }
 
-export function uniqueDisplayTexts(
-  values: string[],
-  positionNumber?: string
-): string[] {
+export function uniqueDisplayTexts(values: string[], positionNumber?: string): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
   for (const value of values) {
@@ -98,8 +83,7 @@ export function uniqueDisplayTexts(
 }
 
 export function displayPositionTitle(position: BasisPosition): string {
-  const direct =
-    position.scopeProfile?.directLeafDescription || position.description;
+  const direct = position.scopeProfile?.directLeafDescription || position.description;
   return normalizeDisplayText(direct, position.positionNumber);
 }
 
@@ -140,19 +124,14 @@ export function displayTechnicalRequirements(position: BasisPosition): {
   return { technical, additional };
 }
 
-export function displayInstallationRequirements(
-  position: BasisPosition
-): string[] {
+export function displayInstallationRequirements(position: BasisPosition): string[] {
   const profile = position.scopeProfile;
   const values = [
-    ...(profile?.inheritedInstallationRequirements.map(
-      (requirement) => requirement.label
-    ) ?? []),
+    ...(profile?.inheritedInstallationRequirements.map((requirement) => requirement.label) ?? []),
     ...(profile?.fullLvExecutionScope
       .filter(
         (requirement) =>
-          requirement.category === "INSTALLATION" ||
-          requirement.category === "EXECUTION"
+          requirement.category === "INSTALLATION" || requirement.category === "EXECUTION"
       )
       .map((requirement) => requirement.label) ?? []),
     ...position.requiredScope
@@ -174,8 +153,5 @@ export function displayManufacturerAndType(position: BasisPosition): string {
     /\b(?:Typ|Type|Modell)\s*:?\s*([^,;.\n]{1,90}?)(?=\s+(?:Art\.?\s*-?\s*Nr|Nenninhalt|Abmessungen?|Inhalt|Bereitschaftsverlust|Komplett\s+liefern)\b|[,;.]|$)/i
   );
   const type = typeMatch?.[1]?.trim();
-  return uniqueDisplayTexts([
-    ...manufacturers,
-    ...(type ? [`Typ ${type}`] : [])
-  ]).join(" · ");
+  return uniqueDisplayTexts([...manufacturers, ...(type ? [`Typ ${type}`] : [])]).join(" · ");
 }

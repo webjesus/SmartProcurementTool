@@ -1,14 +1,26 @@
 import type { BrowserPdfInspection } from "@/browser-projects/document-classification";
+import {
+  recognizeBrowserPage,
+  type BrowserOcrProgress,
+  type BrowserOcrRenderablePdfPage
+} from "@/browser-projects/browser-ocr-engine";
+import {
+  estimateBrowserRasterCoverage,
+  shouldRunBrowserOcr,
+  summarizeBrowserOcr
+} from "@/browser-projects/ocr-fallback";
+import { browserPdfLoadingOptions, configureBrowserPdfJs } from "@/pdf/browser-pdfjs-config";
+
+export type BrowserPdfInspectionOptions = {
+  enableOcr?: boolean;
+  maxOcrPages?: number;
+  onOcrProgress?: (progress: BrowserOcrProgress & { pageNumber: number }) => void;
+};
 
 function rawPdfText(bytes: Uint8Array): string {
   const raw = new TextDecoder("latin1").decode(bytes);
   return [...raw.matchAll(/\(([^()]*)\)\s*Tj/g)]
-    .map((match) =>
-      match[1]
-        .replace(/\\n/g, "\n")
-        .replace(/\\\(/g, "(")
-        .replace(/\\\)/g, ")")
-    )
+    .map((match) => match[1].replace(/\\n/g, "\n").replace(/\\\(/g, "(").replace(/\\\)/g, ")"))
     .join("\n");
 }
 
@@ -24,14 +36,13 @@ function sampledPages(pageCount: number): number[] {
 }
 
 export async function inspectBrowserPdf(
-  bytes: Uint8Array
+  bytes: Uint8Array,
+  options: BrowserPdfInspectionOptions = {}
 ): Promise<BrowserPdfInspection> {
   try {
     const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-    if (typeof window !== "undefined") {
-      pdfjs.GlobalWorkerOptions.workerSrc = "/api/local/pdf-worker";
-    }
-    const loadingTask = pdfjs.getDocument({ data: bytes.slice() });
+    if (typeof window !== "undefined") configureBrowserPdfJs(pdfjs);
+    const loadingTask = pdfjs.getDocument(browserPdfLoadingOptions(bytes.slice()));
     const pdf = await loadingTask.promise;
     const metadata = await pdf
       .getMetadata()
@@ -39,9 +50,13 @@ export async function inspectBrowserPdf(
       .catch(() => ({}));
     const pages = sampledPages(pdf.numPages);
     const pageTexts: string[] = [];
+    const ocrTexts: string[] = [];
+    const ocrConfidences: number[] = [];
     let pagesWithText = 0;
+    let ocrAttempts = 0;
     for (const pageNumber of pages) {
       const page = await pdf.getPage(pageNumber);
+      const viewport = page.getViewport({ scale: 1 });
       const content = await page.getTextContent();
       const text = content.items
         .map((item) => ("str" in item ? item.str : ""))
@@ -50,6 +65,44 @@ export async function inspectBrowserPdf(
         .trim();
       if (text.length >= 20) pagesWithText += 1;
       pageTexts.push(text);
+      let rasterCoverage: number | null = null;
+      try {
+        const operators = await page.getOperatorList();
+        rasterCoverage = estimateBrowserRasterCoverage({
+          ...operators,
+          operators: pdfjs.OPS,
+          viewport
+        });
+      } catch {
+        // A sparse native layer still invokes OCR when image analysis is unavailable.
+      }
+      if (
+        options.enableOcr &&
+        ocrAttempts < Math.max(1, options.maxOcrPages ?? 3) &&
+        shouldRunBrowserOcr({ nativeText: text, rasterCoverage })
+      ) {
+        ocrAttempts += 1;
+        try {
+          const recognized = await recognizeBrowserPage({
+            page: page as unknown as BrowserOcrRenderablePdfPage,
+            baseViewport: viewport,
+            onProgress: options.onOcrProgress
+              ? (progress) => options.onOcrProgress?.({ ...progress, pageNumber })
+              : undefined
+          });
+          const assessment = summarizeBrowserOcr({
+            text: recognized.text,
+            confidence: recognized.confidence,
+            wordCount: recognized.words.length
+          });
+          if (assessment.usable) {
+            ocrTexts.push(recognized.text);
+            ocrConfidences.push(recognized.confidence);
+          }
+        } catch {
+          // Classification remains OCR_REQUIRED when no usable OCR sample exists.
+        }
+      }
     }
     await loadingTask.destroy();
     const extractedText = pageTexts.join("\n");
@@ -64,7 +117,12 @@ export async function inspectBrowserPdf(
       text,
       textLayerCharacterCount: text.replace(/\s+/g, "").length,
       inspectedPageCount: pages.length,
-      pagesWithText
+      pagesWithText,
+      ocrText: ocrTexts.join("\n"),
+      ocrPageCount: ocrTexts.length,
+      ocrMeanConfidence: ocrConfidences.length
+        ? ocrConfidences.reduce((sum, value) => sum + value, 0) / ocrConfidences.length
+        : null
     };
   } catch {
     throw new Error("INVALID_PDF");

@@ -9,6 +9,7 @@ import {
   FilePlus2,
   FileText,
   RefreshCw,
+  ScanText,
   ShieldCheck,
   Trash2,
   X
@@ -500,10 +501,17 @@ export function DocumentReviewPage({ projectId }: { projectId: string }) {
                 </td>
                 <td>{document.pageCount}</td>
                 <td>
-                  {document.documentType === "SCAN_OCR_REQUIRED" ? (
-                    <span className="classification-confidence confidence-low">
-                      <AlertTriangle size={15} /> Scan erkannt · OCR erforderlich
+                  {document.scanState === "OCR_AVAILABLE" ? (
+                    <span className="classification-confidence confidence-medium">
+                      <ScanText size={15} /> Lokal per OCR gelesen · Prüfung
+                      erforderlich
                     </span>
+                  ) : document.documentType === "SCAN_OCR_REQUIRED" ? (
+                    <div className="ocr-required-status">
+                      <span className="classification-confidence confidence-low">
+                        <AlertTriangle size={15} /> Automatische OCR im Verarbeitungslauf · Prüfung erforderlich
+                      </span>
+                    </div>
                   ) : (
                     <span
                       className={`classification-confidence confidence-${document.classificationDimensions.documentRole.toLocaleLowerCase("de")}`}
@@ -519,6 +527,15 @@ export function DocumentReviewPage({ projectId }: { projectId: string }) {
                       Disziplin {document.classificationDimensions.discipline}
                     </span>
                   )}
+                  {document.scanState === "OCR_AVAILABLE" ? (
+                    <small className="ocr-audit-note">
+                      {document.ocrSampledPages ?? 0} Stichprobenseiten ·{" "}
+                      {document.ocrMeanConfidence === null ||
+                      document.ocrMeanConfidence === undefined
+                        ? "Konfidenz offen"
+                        : `${Math.round(document.ocrMeanConfidence)} % OCR-Konfidenz`}
+                    </small>
+                  ) : null}
                   {document.documentType === "SCAN_OCR_REQUIRED" ? (
                     <label className="ocr-exclusion">
                       <input

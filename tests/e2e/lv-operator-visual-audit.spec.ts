@@ -142,9 +142,10 @@ test.describe("approved two-pane LV reference audit", () => {
       .toBeGreaterThanOrEqual(12);
     expect((paneBox?.x ?? 0) - ((listBox?.x ?? 0) + (listBox?.width ?? 0)))
       .toBeLessThanOrEqual(16);
-    const paneRatio = (paneBox?.width ?? 0) / 1920;
-    expect(paneRatio).toBeGreaterThanOrEqual(0.22);
-    expect(paneRatio).toBeLessThanOrEqual(0.33);
+    const workspaceBox = await page.locator("[data-lv-two-pane]").boundingBox();
+    const paneRatio = (paneBox?.width ?? 0) / (workspaceBox?.width ?? 1);
+    expect(paneRatio).toBeGreaterThanOrEqual(0.38);
+    expect(paneRatio).toBeLessThanOrEqual(0.4);
     await page.screenshot({
       path: testInfo.outputPath("04-information-tab.png")
     });

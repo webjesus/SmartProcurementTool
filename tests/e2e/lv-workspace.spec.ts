@@ -65,7 +65,7 @@ test.describe("componentized real LV workspace", () => {
     const failures = runtimeFailures(page);
     await openWorkspace(page);
     await expect(
-      page.getByRole("heading", { name: "Heizung LV-Vergleich" })
+      page.getByRole("heading", { name: "Heizung · LV-Vergleich" })
     ).toBeVisible();
     await expect(page.locator("[data-lv-position]")).toHaveCount(188);
     await expect(page.getByText("Projekt Nordtor")).toHaveCount(0);

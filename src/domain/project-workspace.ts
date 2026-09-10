@@ -9,6 +9,15 @@ export const WorkspaceSourceStateSchema = z.object({
   scrollLeft: z.number().nonnegative().default(0),
   scrollTop: z.number().nonnegative().default(0)
 });
+export type WorkspaceSourceState = z.infer<typeof WorkspaceSourceStateSchema>;
+
+export function resolveWorkspaceSourceView(
+  sourceViews: Readonly<Record<string, WorkspaceSourceState>>,
+  source: { sourceKey: string; documentRevisionId: string }
+): WorkspaceSourceState | null {
+  const saved = sourceViews[source.sourceKey];
+  return saved?.documentRevisionId === source.documentRevisionId ? saved : null;
+}
 
 export const ProjectWorkspaceStateSchema = z.object({
   discipline: z.string().min(1).default("HEIZUNG"),
@@ -34,7 +43,10 @@ export const ProjectWorkspaceStateSchema = z.object({
     .default("OFFER_DATA"),
   fullscreenSourceOpen: z.boolean().default(false),
   warningCenterOpen: z.boolean().default(false),
-  sourceOverlay: WorkspaceSourceStateSchema.nullable().default(null)
+  sourceOverlay: WorkspaceSourceStateSchema.nullable().default(null),
+  sourceViews: z
+    .record(z.string().min(1), WorkspaceSourceStateSchema)
+    .default({})
 });
 export type ProjectWorkspaceState = z.infer<
   typeof ProjectWorkspaceStateSchema
