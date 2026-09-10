@@ -13,10 +13,7 @@ import {
 import { useEffect, useMemo, useRef } from "react";
 import type { OfferLine, SupplierOption } from "@/domain/contracts";
 import type { ProjectReviewPosition } from "@/domain/project-review";
-import type {
-  CentralSupplierDecision,
-  DecisionDraftRecord
-} from "@/domain/central-decision";
+import type { CentralSupplierDecision, DecisionDraftRecord } from "@/domain/central-decision";
 import {
   buildBasisStructureInterpretation,
   buildOperatorSupplierOptionReadModel,
@@ -49,9 +46,7 @@ export function operatorSelectedOption(
   decision: CentralSupplierDecision | undefined
 ): SupplierOption | undefined {
   if (!decision || decision.outcome !== "SELECTED") return undefined;
-  return position.options.find(
-    (option) => option.id === decision.selectedSupplierOptionId
-  );
+  return position.options.find((option) => option.id === decision.selectedSupplierOptionId);
 }
 
 function optionModel(
@@ -65,11 +60,8 @@ function optionModel(
     option,
     offerLines,
     sourceAvailable:
-      (!supplierSourceDocumentIds ||
-        supplierSourceDocumentIds.has(option.supplierDocumentId)) &&
-      supplierOptionLines(option, offerLines).some(
-        (line) => line.evidence.length > 0
-      )
+      (!supplierSourceDocumentIds || supplierSourceDocumentIds.has(option.supplierDocumentId)) &&
+      supplierOptionLines(option, offerLines).some((line) => line.evidence.length > 0)
   });
 }
 
@@ -106,23 +98,28 @@ export function cheapestFoundOption(
     })
     .sort(
       (left, right) =>
-        optionPrice(position, left, offerLines)! -
-          optionPrice(position, right, offerLines)! ||
+        optionPrice(position, left, offerLines)! - optionPrice(position, right, offerLines)! ||
         left.supplierLabel.localeCompare(right.supplierLabel, "de")
     )[0];
 }
 
-function optionHasWarning(
+export function supplierOptionNeedsReview(
   option: SupplierOption,
   model: OperatorSupplierOptionReadModel
 ): boolean {
+  const technicalStatus =
+    option.technicalComparisonStatus ??
+    (option.technicalCompatible ? "CONFIRMED_COMPATIBLE" : "CONFIRMED_DEVIATION");
   return (
     model.price.total === null ||
     model.packageCompleteness !== "COMPLETE" ||
     !option.quantityCompatible ||
     !option.unitCompatible ||
-    option.technicalComparisonStatus !== "CONFIRMED_COMPATIBLE" ||
-    !option.matchingReliable
+    technicalStatus !== "CONFIRMED_COMPATIBLE" ||
+    !(option.matchingAccepted || option.matchingReliable) ||
+    !option.evidenceSufficient ||
+    !option.extractionValidated ||
+    option.validationIssueIds.length > 0
   );
 }
 
@@ -149,10 +146,9 @@ function SupplierOptionRow({
   onSource: () => void;
   onInfo: () => void;
 }) {
-  const warning = optionHasWarning(option, model);
+  const warning = supplierOptionNeedsReview(option, model);
   const requiresInspector =
-    model.packageCompleteness === "PARTIAL" ||
-    model.packageCompleteness === "PRIMARY_ONLY";
+    model.packageCompleteness === "PARTIAL" || model.packageCompleteness === "PRIMARY_ONLY";
   return (
     <tr
       className={`lv-supplier-row ${selected ? "selected" : ""} ${
@@ -172,10 +168,7 @@ function SupplierOptionRow({
         <strong>{shortDescription(model.title, 100)}</strong>
       </td>
       <td className="lv-supplier-name-cell">
-        <BrandMark
-          resolution={model.supplierBrand}
-          label={model.supplierDisplayName}
-        />
+        <BrandMark resolution={model.supplierBrand} label={model.supplierDisplayName} />
       </td>
       <td className="lv-supplier-data-cell">
         <strong>
@@ -188,17 +181,15 @@ function SupplierOptionRow({
         </strong>
         <span>{model.packageCompletenessLabelDe}</span>
         <small>
-          {model.coveredRequiredComponentCount} von{" "}
-          {model.requiredComponentCount} Pflichtbestandteilen
+          {model.coveredRequiredComponentCount} von {model.requiredComponentCount}{" "}
+          Pflichtbestandteilen
         </small>
       </td>
       <td className="lv-quantity-cell">
         {formatNumber(model.quantity)} {model.unit ?? position.basis.unit ?? ""}
       </td>
       <td className="lv-price-cell">
-        {model.price.total !== null ? (
-          <strong>{formatCurrency(model.price.total)}</strong>
-        ) : null}
+        {model.price.total !== null ? <strong>{formatCurrency(model.price.total)}</strong> : null}
         {model.price.unitPrice !== null ? (
           <span>EP {formatCurrency(model.price.unitPrice)}</span>
         ) : null}
@@ -206,9 +197,7 @@ function SupplierOptionRow({
           {model.priceProvenanceLabelDe}
         </small>
         <details className="lv-price-composition">
-          <summary title="Preiszusammensetzung anzeigen">
-            Preiszusammensetzung
-          </summary>
+          <summary title="Preiszusammensetzung anzeigen">Preiszusammensetzung</summary>
           <div>
             {model.priceComposition.map((item) => (
               <p key={item.lineId}>
@@ -242,16 +231,10 @@ function SupplierOptionRow({
           disabled={pending}
           onClick={selected || requiresInspector ? onInfo : onSelect}
         >
-          {pending
-            ? "Speichern..."
-            : selected
-              ? "Auswahl ändern"
-              : model.selectActionLabelDe}
+          {pending ? "Speichern..." : selected ? "Auswahl ändern" : model.selectActionLabelDe}
         </button>
         {model.partialSelectionWarningDe ? (
-          <small className="lv-partial-warning">
-            {model.partialSelectionWarningDe}
-          </small>
+          <small className="lv-partial-warning">{model.partialSelectionWarningDe}</small>
         ) : null}
       </td>
       <td className="lv-source-cell">
@@ -304,12 +287,7 @@ function LvComparisonPosition({
       new Map(
         position.options.map((option) => [
           option.id,
-          optionModel(
-            position,
-            option,
-            offerLines,
-            supplierSourceDocumentIds
-          )
+          optionModel(position, option, offerLines, supplierSourceDocumentIds)
         ])
       ),
     [offerLines, position, supplierSourceDocumentIds]
@@ -318,26 +296,21 @@ function LvComparisonPosition({
   const selectedModel = selected ? models.get(selected.id) : undefined;
   const cheapest = cheapestFoundOption(position, offerLines);
   const cheapestModel = cheapest ? models.get(cheapest.id) : undefined;
-  const availableOptions = position.options.filter(
-    (option) => models.get(option.id)?.selectable
-  );
+  const availableOptions = position.options.filter((option) => models.get(option.id)?.selectable);
   const explicitNoOfferOptions = position.options.filter(
     (option) => models.get(option.id)?.validity === "EXPLICIT_NO_OFFER"
   );
   const structure = buildBasisStructureInterpretation(position.basis);
   const positionHasWarning =
     availableOptions.length === 0 ||
-    position.options.some((option) =>
-      optionHasWarning(option, models.get(option.id)!)
-    );
+    position.options.some((option) => supplierOptionNeedsReview(option, models.get(option.id)!));
   const cheaperAvailable =
     selected &&
     cheapest &&
     cheapest.id !== selected.id &&
     optionPrice(position, cheapest, offerLines) !== null &&
     optionPrice(position, selected, offerLines) !== null &&
-    optionPrice(position, cheapest, offerLines)! <
-      optionPrice(position, selected, offerLines)!;
+    optionPrice(position, cheapest, offerLines)! < optionPrice(position, selected, offerLines)!;
 
   return (
     <>
@@ -370,9 +343,7 @@ function LvComparisonPosition({
           <strong>{position.basis.positionNumber}</strong>
         </td>
         <td className="lv-description-cell">
-          <span>
-            {shortDescription(displayShortDescription(position.basis), 130)}
-          </span>
+          <span>{shortDescription(displayShortDescription(position.basis), 130)}</span>
         </td>
         <td className="lv-parent-supplier-cell">
           {selected && selectedModel ? (
@@ -402,9 +373,7 @@ function LvComparisonPosition({
                 label={cheapest.supplierLabel}
                 compact
               />
-              <strong>
-                {formatCurrency(optionPrice(position, cheapest, offerLines))}
-              </strong>
+              <strong>{formatCurrency(optionPrice(position, cheapest, offerLines))}</strong>
             </span>
           ) : (
             "Keine Angebotsdaten"
@@ -416,12 +385,8 @@ function LvComparisonPosition({
         <td className="lv-price-cell">
           {selectedModel || cheapestModel ? (
             <>
-              <strong>
-                {formatCurrency((selectedModel ?? cheapestModel)!.price.total)}
-              </strong>
-              <span>
-                {(selectedModel ?? cheapestModel)!.priceProvenanceLabelDe}
-              </span>
+              <strong>{formatCurrency((selectedModel ?? cheapestModel)!.price.total)}</strong>
+              <span>{(selectedModel ?? cheapestModel)!.priceProvenanceLabelDe}</span>
             </>
           ) : null}
           {cheaperAvailable ? <span>Günstigeres Angebot vorhanden</span> : null}
@@ -490,8 +455,7 @@ function LvComparisonPosition({
               selected={selected?.id === option.id}
               cheapest={cheapest?.id === option.id}
               groupEnd={
-                optionIndex === availableOptions.length - 1 &&
-                explicitNoOfferOptions.length === 0
+                optionIndex === availableOptions.length - 1 && explicitNoOfferOptions.length === 0
               }
               pending={pendingOptionId === option.id}
               onSelect={() => onSelectOption(option)}
@@ -503,17 +467,14 @@ function LvComparisonPosition({
       {expanded
         ? explicitNoOfferOptions.map((option, optionIndex) => {
             const model = models.get(option.id)!;
-            const sourceAvailable = supplierOptionLines(
-              option,
-              offerLines
-            ).some((line) => line.evidence.length > 0);
+            const sourceAvailable = supplierOptionLines(option, offerLines).some(
+              (line) => line.evidence.length > 0
+            );
             return (
               <tr
                 key={option.id}
                 className={`lv-position-no-offer ${
-                  optionIndex === explicitNoOfferOptions.length - 1
-                    ? "lv-position-group-end"
-                    : ""
+                  optionIndex === explicitNoOfferOptions.length - 1 ? "lv-position-group-end" : ""
                 }`}
                 data-option-validity={model.validity}
                 data-supplier-label={option.supplierLabel}
@@ -532,10 +493,7 @@ function LvComparisonPosition({
                   />
                 </td>
                 <td className="lv-supplier-data-cell">
-                  <span>
-                    Diese Ausschreibungsposition wird vom Lieferanten nicht
-                    angeboten.
-                  </span>
+                  <span>Diese Ausschreibungsposition wird vom Lieferanten nicht angeboten.</span>
                 </td>
                 <td className="lv-quantity-cell">—</td>
                 <td className="lv-price-cell">—</td>
@@ -544,20 +502,14 @@ function LvComparisonPosition({
                 </td>
                 <td className="lv-source-cell">
                   {sourceAvailable ? (
-                    <button
-                      className="lv-row-action"
-                      onClick={() => onSupplierSource(option)}
-                    >
+                    <button className="lv-row-action" onClick={() => onSupplierSource(option)}>
                       <ExternalLink size={14} /> Zur Quelle
                     </button>
                   ) : null}
                 </td>
                 <td className="lv-info-cell">
                   {sourceAvailable ? (
-                    <button
-                      className="lv-row-action"
-                      onClick={() => onInfo(option)}
-                    >
+                    <button className="lv-row-action" onClick={() => onInfo(option)}>
                       <Info size={15} /> Info
                     </button>
                   ) : null}
@@ -566,9 +518,7 @@ function LvComparisonPosition({
             );
           })
         : null}
-      {expanded &&
-      availableOptions.length === 0 &&
-      explicitNoOfferOptions.length === 0 ? (
+      {expanded && availableOptions.length === 0 && explicitNoOfferOptions.length === 0 ? (
         <tr className="lv-position-empty-offers lv-position-group-end">
           <td colSpan={9}>
             <div>
@@ -576,8 +526,7 @@ function LvComparisonPosition({
               <span>
                 <strong>Keine Angebote gefunden</strong>
                 <small>
-                  Für diese Basis-Position wurde keine passende
-                  Angebotsposition zugeordnet.
+                  Für diese Basis-Position wurde keine passende Angebotsposition zugeordnet.
                 </small>
               </span>
               <button
@@ -629,14 +578,8 @@ export function LvComparisonTable({
   onTogglePosition: (position: ProjectReviewPosition) => void;
   onInfo: (position: ProjectReviewPosition, option?: SupplierOption) => void;
   onOpenBasisSource: (position: ProjectReviewPosition) => void;
-  onOpenSupplierSource: (
-    position: ProjectReviewPosition,
-    option: SupplierOption
-  ) => void;
-  onSelectOption: (
-    position: ProjectReviewPosition,
-    option: SupplierOption
-  ) => void;
+  onOpenSupplierSource: (position: ProjectReviewPosition, option: SupplierOption) => void;
+  onSelectOption: (position: ProjectReviewPosition, option: SupplierOption) => void;
   onShowWarnings?: () => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -685,10 +628,7 @@ export function LvComparisonTable({
                 ...(isCollapsed
                   ? []
                   : section.positions.map((position) => {
-                      const decision = latestPositionDecision(
-                        decisions,
-                        position.basis.id
-                      );
+                      const decision = latestPositionDecision(decisions, position.basis.id);
                       return (
                         <LvComparisonPosition
                           key={position.basis.id}
@@ -696,21 +636,15 @@ export function LvComparisonTable({
                           offerLines={offerLines}
                           supplierSourceDocumentIds={supplierSourceDocumentIds}
                           decision={decision}
-                          draft={drafts.find(
-                            (draft) => draft.positionId === position.basis.id
-                          )}
+                          draft={drafts.find((draft) => draft.positionId === position.basis.id)}
                           active={activePositionId === position.basis.id}
                           expanded={expandedPositionIds.has(position.basis.id)}
                           pendingOptionId={pendingOptionId}
                           onToggle={() => onTogglePosition(position)}
                           onInfo={(option) => onInfo(position, option)}
                           onBasisSource={() => onOpenBasisSource(position)}
-                          onSupplierSource={(option) =>
-                            onOpenSupplierSource(position, option)
-                          }
-                          onSelectOption={(option) =>
-                            onSelectOption(position, option)
-                          }
+                          onSupplierSource={(option) => onOpenSupplierSource(position, option)}
+                          onSelectOption={(option) => onSelectOption(position, option)}
                           onShowWarnings={onShowWarnings}
                         />
                       );

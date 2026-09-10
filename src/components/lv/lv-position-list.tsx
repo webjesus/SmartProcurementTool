@@ -4,30 +4,22 @@ import {
   AlertTriangle,
   Check,
   ChevronDown,
-  ChevronLeft,
-  ChevronRight,
   ExternalLink,
   FolderTree,
-  Info
+  Minus,
+  Sparkles
 } from "lucide-react";
 import type { OfferLine, SupplierOption } from "@/domain/contracts";
-import type {
-  CentralSupplierDecision,
-  DecisionDraftRecord
-} from "@/domain/central-decision";
+import type { CentralSupplierDecision, DecisionDraftRecord } from "@/domain/central-decision";
 import type { ProjectReviewPosition } from "@/domain/project-review";
-import {
-  buildOperatorSupplierOptionReadModel,
-  type OperatorSupplierOptionReadModel
-} from "@/domain/operator-supplier-option-read-model";
-import { supplierOptionLines } from "@/domain/supplier-option-read-model";
-import { BrandMark } from "./brand-mark";
+import { buildOperatorSupplierOptionReadModel } from "@/domain/operator-supplier-option-read-model";
 import { displayShortDescription } from "./display-normalization";
 import { formatCurrency, formatNumber, shortDescription } from "./format";
 import {
   cheapestFoundOption,
   latestPositionDecision,
   operatorSelectedOption,
+  supplierOptionNeedsReview,
   type LvSection
 } from "./lv-comparison-table";
 
@@ -46,22 +38,14 @@ export function derivePositionSelectionState(input: {
   optionCount: number;
 }): PositionSelectionState {
   if (input.selected) {
-    return input.selectedHasWarning
-      ? "SELECTED_WITH_WARNING"
-      : "SELECTED_VALID";
+    return input.selectedHasWarning ? "SELECTED_WITH_WARNING" : "SELECTED_VALID";
   }
   if (input.selectableCount > 0) return "UNSELECTED";
-  if (
-    input.explicitNoOfferCount > 0 &&
-    input.explicitNoOfferCount === input.optionCount
-  ) {
+  if (input.explicitNoOfferCount > 0 && input.explicitNoOfferCount === input.optionCount) {
     return "NO_OFFER";
   }
   return "MATCH_REVIEW_REQUIRED";
 }
-
-const SUPPLIER_GRID_COLUMNS =
-  "48px minmax(125px, 145px) minmax(210px, 1.1fr) minmax(190px, 1fr) minmax(75px, 88px) minmax(130px, 150px) 64px 52px";
 
 function optionModel(
   position: ProjectReviewPosition,
@@ -74,183 +58,32 @@ function optionModel(
     option,
     offerLines,
     sourceAvailable:
-      (!supplierSourceDocumentIds ||
-        supplierSourceDocumentIds.has(option.supplierDocumentId)) &&
-      supplierOptionLines(option, offerLines).some(
-        (line) => line.evidence.length > 0
-      )
+      !supplierSourceDocumentIds || supplierSourceDocumentIds.has(option.supplierDocumentId)
   });
 }
 
-function hasWarning(
-  option: SupplierOption,
-  model: OperatorSupplierOptionReadModel
-) {
-  return (
-    model.price.total === null ||
-    model.packageCompleteness !== "COMPLETE" ||
-    !option.quantityCompatible ||
-    !option.unitCompatible ||
-    option.technicalComparisonStatus !== "CONFIRMED_COMPATIBLE" ||
-    !option.matchingReliable
-  );
-}
-
-function shortInformation(
-  model: OperatorSupplierOptionReadModel,
-  lines: readonly OfferLine[]
-) {
-  return Array.from(
-    new Set(
-      [
-        model.manufacturerDisplayName,
-        ...lines.map((line) => line.description)
-      ].filter((value): value is string => Boolean(value?.trim()))
-    )
-  )
-    .slice(0, 3)
-    .map((value) => shortDescription(value, 54));
-}
-
-function SupplierRow({
+function PositionRow({
   position,
-  option,
-  model,
-  lines,
-  selected,
-  cheapest,
-  pending,
-  onSelect,
-  onSource,
-  onInfo
-}: {
-  position: ProjectReviewPosition;
-  option: SupplierOption;
-  model: OperatorSupplierOptionReadModel;
-  lines: OfferLine[];
-  selected: boolean;
-  cheapest: boolean;
-  pending: boolean;
-  onSelect: () => void;
-  onSource: () => void;
-  onInfo: () => void;
-}) {
-  const warning = hasWarning(option, model);
-  return (
-    <div
-      className={`lv-offer-grid lv-offer-row ${selected ? "selected" : ""}`}
-      style={{ gridTemplateColumns: SUPPLIER_GRID_COLUMNS }}
-      role="button"
-      tabIndex={0}
-      aria-pressed={selected}
-      data-supplier-option={option.id}
-      data-supplier-label={option.supplierLabel}
-      data-package-completeness={model.packageCompleteness}
-      data-price-provenance={model.priceProvenance}
-      onClick={pending ? undefined : onSelect}
-      onKeyDown={(event) => {
-        if (pending || (event.key !== "Enter" && event.key !== " ")) return;
-        event.preventDefault();
-        onSelect();
-      }}
-    >
-      <div className="lv-offer-select" aria-label={selected ? "Ausgewählt" : "Nicht ausgewählt"}>
-        <span className={`lv-radio-indicator ${selected ? "selected" : ""}`}>
-          {selected ? <Check size={13} /> : null}
-        </span>
-      </div>
-      <div className="lv-offer-supplier">
-        <BrandMark
-          resolution={model.supplierBrand}
-          label={model.supplierDisplayName}
-        />
-      </div>
-      <div className="lv-offer-product">
-        <strong>{shortDescription(model.title, 72)}</strong>
-        <span>
-          {model.articleNumber ? `Art. ${model.articleNumber}` : "Ohne Artikelnummer"}
-        </span>
-        <small>{model.packageCompletenessLabelDe}</small>
-        <small>
-          {model.coveredRequiredComponentCount} von {model.requiredComponentCount} Pflichtbestandteilen
-        </small>
-      </div>
-      <div className="lv-offer-summary">
-        {shortInformation(model, lines).map((value) => (
-          <span key={value}>{value}</span>
-        ))}
-      </div>
-      <div className="lv-offer-quantity">
-        <strong>{formatNumber(model.quantity)}</strong>
-        <span>{model.unit ?? position.basis.unit ?? ""}</span>
-      </div>
-      <div className="lv-offer-price">
-        <strong>{formatCurrency(model.price.total)}</strong>
-        {model.price.unitPrice !== null ? (
-          <span>EP {formatCurrency(model.price.unitPrice)}</span>
-        ) : null}
-        <small>{model.priceProvenanceLabelDe}</small>
-        {cheapest ? <em>Günstigster Preis</em> : null}
-        {warning ? <i><AlertTriangle size={11} /> Hinweis</i> : null}
-      </div>
-      <div className="lv-offer-action">
-        <button
-          onClick={(event) => {
-            event.stopPropagation();
-            onSource();
-          }}
-          aria-label={`Quelle ${model.supplierDisplayName}`}
-          title="Zur Angebotsquelle"
-        >
-          <ExternalLink size={18} />
-        </button>
-      </div>
-      <div className="lv-offer-action">
-        <button
-          onClick={(event) => {
-            event.stopPropagation();
-            onInfo();
-          }}
-          aria-label={`Info ${model.supplierDisplayName}`}
-          title="Angebotsdaten"
-        >
-          <Info size={18} />
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function PositionGroup({
-  position,
-  expanded,
   active,
+  expanded,
   offerLines,
+  manualDisplayLabels,
   supplierSourceDocumentIds,
   decision,
   draft,
-  pendingOptionId,
-  onToggle,
-  onInfo,
-  onBasisSource,
-  onSupplierSource,
-  onSelectOption,
-  onShowWarnings
+  onOpen,
+  onBasisSource
 }: {
   position: ProjectReviewPosition;
-  expanded: boolean;
   active: boolean;
+  expanded: boolean;
   offerLines: Map<string, OfferLine>;
+  manualDisplayLabels?: Readonly<Record<string, string>>;
   supplierSourceDocumentIds?: ReadonlySet<string>;
   decision?: CentralSupplierDecision;
   draft?: DecisionDraftRecord;
-  pendingOptionId: string | null;
-  onToggle: () => void;
-  onInfo: (option?: SupplierOption) => void;
+  onOpen: () => void;
   onBasisSource: () => void;
-  onSupplierSource: (option: SupplierOption) => void;
-  onSelectOption: (option: SupplierOption) => void;
-  onShowWarnings?: () => void;
 }) {
   const models = new Map(
     position.options.map((option) => [
@@ -260,258 +93,146 @@ function PositionGroup({
   );
   const selected = operatorSelectedOption(position, decision);
   const cheapest = cheapestFoundOption(position, offerLines);
-  const selectable = position.options
-    .filter((option) => models.get(option.id)?.selectable)
-    .sort((left, right) => {
-      if (left.id === selected?.id) return -1;
-      if (right.id === selected?.id) return 1;
-      return (
-        (models.get(left.id)?.price.total ?? Infinity) -
-          (models.get(right.id)?.price.total ?? Infinity) ||
-        left.supplierLabel.localeCompare(right.supplierLabel, "de")
-      );
-    });
+  const selectable = position.options.filter((option) => models.get(option.id)?.selectable);
   const explicitNoOffers = position.options.filter(
     (option) => models.get(option.id)?.validity === "EXPLICIT_NO_OFFER"
   );
-  const summaryOption = selected;
+  const selectedModel = selected ? models.get(selected.id) : undefined;
+  const suggestion = !selected ? cheapest : undefined;
+  const summaryOption = selected ?? suggestion;
   const summaryModel = summaryOption ? models.get(summaryOption.id) : undefined;
+  const suggestionNeedsReview = Boolean(
+    suggestion && summaryModel && supplierOptionNeedsReview(suggestion, summaryModel)
+  );
   const selectionState = derivePositionSelectionState({
     selected: Boolean(selected),
-    selectedHasWarning:
-      Boolean(selected) &&
-      Boolean(selected && hasWarning(selected, models.get(selected.id)!)),
+    selectedHasWarning: Boolean(
+      selected && selectedModel && supplierOptionNeedsReview(selected, selectedModel)
+    ),
     selectableCount: selectable.length,
     explicitNoOfferCount: explicitNoOffers.length,
     optionCount: position.options.length
   });
-  const collapsedStatus =
+  const basisDisplayLabel =
+    manualDisplayLabels?.[`BASIS_POSITION:${position.basis.id}`] ??
+    displayShortDescription(position.basis);
+  const status =
     selectionState === "SELECTED_VALID"
-      ? { icon: "✓", text: summaryModel?.supplierDisplayName ?? "Ausgewählt" }
+      ? { label: "Entschieden", tone: "done", icon: <Check size={13} /> }
       : selectionState === "SELECTED_WITH_WARNING"
-        ? { icon: "⚠", text: summaryModel?.supplierDisplayName ?? "Ausgewählt" }
+        ? { label: "Prüfen", tone: "warning", icon: <AlertTriangle size={13} /> }
         : selectionState === "NO_OFFER"
-          ? { icon: "—", text: "Kein Angebot" }
+          ? { label: "Kein Angebot", tone: "muted", icon: <Minus size={13} /> }
           : selectionState === "MATCH_REVIEW_REQUIRED"
-            ? { icon: "?", text: "Zuordnung prüfen" }
-            : { icon: "?", text: "Nicht ausgewählt" };
-  const positionWarning =
-    selectable.length === 0 ||
-    position.options.some((option) => hasWarning(option, models.get(option.id)!));
+            ? { label: "Zuordnung", tone: "warning", icon: <AlertTriangle size={13} /> }
+            : { label: "Offen", tone: "open", icon: <span className="lv-status-dot" /> };
 
   return (
     <article
-      className={`lv-position-card ${expanded ? "expanded" : "collapsed"} ${
-        active ? "active" : ""
-      } ${selected ? "has-selection" : ""}`}
+      className={`lv-position-card collapsed ${active ? "active" : ""} ${
+        selected ? "has-selection" : ""
+      }`}
       data-lv-position={position.basis.positionNumber}
       data-position-id={position.basis.id}
       data-expanded={expanded ? "true" : "false"}
     >
-      <div
-        className="lv-position-card-header"
-        role="button"
-        tabIndex={0}
-        onClick={onToggle}
-        onKeyDown={(event) => {
-          if (event.key !== "Enter" && event.key !== " ") return;
-          event.preventDefault();
-          onToggle();
-        }}
-      >
-        <span className="lv-position-chevron">
-          <ChevronDown size={18} />
-        </span>
-        <strong className="lv-position-number">
-          {position.basis.positionNumber}
-        </strong>
-        <div className="lv-position-title">
-          <strong>{shortDescription(displayShortDescription(position.basis), 130)}</strong>
-          {expanded ? (
-            <span>
-              {selectable.length} {selectable.length === 1 ? "Angebot verfügbar" : "Angebote verfügbar"}
-            </span>
-          ) : null}
+      <div className="lv-position-card-header">
+        <button
+          type="button"
+          className="lv-position-open-target"
+          aria-label={`${position.basis.positionNumber} ${basisDisplayLabel}`}
+          aria-current={active ? "true" : undefined}
+          onClick={onOpen}
+        />
+        <div className="lv-position-primary">
+          <strong className="lv-position-number">{position.basis.positionNumber}</strong>
+          <span className="lv-position-title" title={basisDisplayLabel}>
+            {shortDescription(basisDisplayLabel, 92)}
+          </span>
+          <small>
+            {selectable.length} {selectable.length === 1 ? "Angebot" : "Angebote"}
+            {position.basis.verificationStatus === "HUMAN_CORRECTED" ? " · Manuell korrigiert" : ""}
+          </small>
         </div>
-        {!expanded ? (
-          <>
-            <div className="lv-position-selected-supplier">
-              <span
-                className={`lv-collapsed-selection state-${selectionState.toLocaleLowerCase()}`}
-                data-position-selection-state={selectionState}
-              >
-                <i aria-hidden="true">{collapsedStatus.icon}</i>
-                <strong>{collapsedStatus.text}</strong>
-              </span>
-            </div>
-            <div className="lv-position-summary">
-              {summaryModel ? (
-                <>
-                  <strong>{shortDescription(summaryModel.title, 45)}</strong>
-                  <span>{summaryModel.packageCompletenessLabelDe}</span>
-                </>
-              ) : (
-                <span>
-                  {selectionState === "MATCH_REVIEW_REQUIRED"
-                    ? "Matching nicht bestätigt"
-                    : selectionState === "NO_OFFER"
-                      ? "Explizit nicht angeboten"
-                      : "Noch keine Auswahl"}
-                </span>
-              )}
-            </div>
-            <div className="lv-position-summary-quantity">
-              {formatNumber(position.basis.quantity)} {position.basis.unit ?? ""}
-            </div>
-            <div className="lv-position-summary-price">
-              <strong>{formatCurrency(summaryModel?.price.total ?? null)}</strong>
-              <span>
-                {summaryModel?.priceProvenanceLabelDe ??
-                  (selectionState === "MATCH_REVIEW_REQUIRED"
-                    ? "Zuordnung prüfen"
-                    : selectionState === "NO_OFFER"
-                      ? "Kein Angebot"
-                      : "Nicht ausgewählt")}
-              </span>
-            </div>
-          </>
-        ) : (
-          <div className="lv-position-expanded-state">
-            {selected ? (
-              <span><Check size={13} /> Ausgewählt</span>
-            ) : (
-              <span className="unselected">Nicht ausgewählt</span>
-            )}
-            {positionWarning ? <AlertTriangle size={16} aria-label="Hinweise vorhanden" /> : null}
-          </div>
-        )}
-        <button
-          className="lv-position-source"
-          disabled={!position.basis.evidence.length}
-          onClick={(event) => {
-            event.stopPropagation();
-            onBasisSource();
-          }}
-          aria-label={`Basis-Quelle ${position.basis.positionNumber}`}
-        >
-          <ExternalLink size={17} />
-          {!expanded ? <span>Basis-Quelle</span> : null}
-        </button>
-        <button
-          className="lv-position-info"
-          onClick={(event) => {
-            event.stopPropagation();
-            onInfo(selected ?? cheapest);
-          }}
-          aria-label={`Info Position ${position.basis.positionNumber}`}
-        >
-          <Info size={18} />
-        </button>
-      </div>
 
-      {expanded ? (
-        <div className="lv-position-offers">
-          {selectable.length > 0 ? (
-            <div
-              className="lv-offer-grid lv-offer-grid-header"
-              style={{ gridTemplateColumns: SUPPLIER_GRID_COLUMNS }}
-            >
-              <span />
-              <strong>Lieferant</strong>
-              <strong>Angebot / Artikel</strong>
-              <strong>Kurzinfo</strong>
-              <strong>Menge</strong>
-              <strong>Preis (EUR)</strong>
-              <strong>Quelle</strong>
-              <strong>Info</strong>
-            </div>
-          ) : null}
-          {selectable.map((option) => (
-            <SupplierRow
-              key={option.id}
-              position={position}
-              option={option}
-              model={models.get(option.id)!}
-              lines={supplierOptionLines(option, offerLines)}
-              selected={selected?.id === option.id}
-              cheapest={cheapest?.id === option.id}
-              pending={pendingOptionId === option.id}
-              onSelect={() => onSelectOption(option)}
-              onSource={() => onSupplierSource(option)}
-              onInfo={() => onInfo(option)}
-            />
-          ))}
-          {explicitNoOffers.map((option) => {
-            const model = models.get(option.id)!;
-            return (
-              <div
-                key={option.id}
-                className="lv-explicit-no-offer-compact"
-                data-option-validity="EXPLICIT_NO_OFFER"
-                data-supplier-label={option.supplierLabel}
+        <div className="lv-position-choice">
+          {summaryModel ? (
+            <>
+              <span
+                className={suggestion ? "is-suggestion" : "is-selected"}
+                data-recommendation-state={suggestionNeedsReview ? "review" : "ready"}
               >
-                <strong>{model.supplierDisplayName} · Nicht angeboten</strong>
-                <span>Explizite Angabe im Quelldokument.</span>
-                {model.sourceAvailable ? (
-                  <button
-                    onClick={() => onSupplierSource(option)}
-                    aria-label={`Quelle ${model.supplierDisplayName}`}
-                  >
-                    <ExternalLink size={16} /> Zur Quelle
-                  </button>
-                ) : null}
-              </div>
-            );
-          })}
-          {selectable.length === 0 && explicitNoOffers.length === 0 ? (
-            <div className="lv-position-no-offers">
-              <AlertTriangle size={17} />
-              <span>
-                <strong>Zuordnung prüfen</strong>
-                <small>
-                  Kein passendes Angebot wurde sicher zugeordnet. Das ist
-                  keine bestätigte Nichtabgabe.
-                </small>
+                {suggestionNeedsReview ? (
+                  <AlertTriangle size={12} />
+                ) : suggestion ? (
+                  <Sparkles size={12} />
+                ) : (
+                  <Check size={12} />
+                )}
+                {suggestionNeedsReview ? "Preis prüfen" : suggestion ? "Vorschlag" : "Auswahl"}
               </span>
-              <button onClick={onShowWarnings}>Hinweise anzeigen</button>
-            </div>
-          ) : null}
+              <strong>{shortDescription(summaryModel.supplierDisplayName, 28)}</strong>
+            </>
+          ) : (
+            <span className="lv-position-empty">Noch keine Auswahl</span>
+          )}
         </div>
-      ) : null}
-      {draft ? <span className="lv-position-draft-dot" title="Gespeicherter Entwurf" /> : null}
+
+        <div className="lv-position-quantity">
+          <strong>{formatNumber(position.basis.quantity)}</strong>
+          <span>{position.basis.unit ?? ""}</span>
+        </div>
+
+        <div
+          className="lv-position-price"
+          data-price-state={selected ? "selected" : suggestion ? "cheapest" : "standard"}
+        >
+          <strong>{formatCurrency(summaryModel?.price.total ?? null)}</strong>
+          <span>
+            {selected
+              ? "gewählt"
+              : suggestionNeedsReview
+                ? "niedrigster Preis · prüfen"
+                : suggestion
+                  ? "günstigster Vorschlag"
+                  : ""}
+          </span>
+        </div>
+
+        <div className="lv-position-state">
+          <span
+            className={`lv-state-pill tone-${status.tone}`}
+            data-position-selection-state={selectionState}
+          >
+            {status.icon}
+            {status.label}
+          </span>
+          <button
+            type="button"
+            className="lv-row-source"
+            disabled={!position.basis.evidence.length}
+            onClick={(event) => {
+              event.stopPropagation();
+              onBasisSource();
+            }}
+            aria-label={`Basis-Quelle ${position.basis.positionNumber}`}
+            title="Basis-LV anzeigen"
+          >
+            <ExternalLink size={15} />
+          </button>
+        </div>
+        {draft ? <span className="lv-position-draft-dot" title="Gespeicherter Entwurf" /> : null}
+      </div>
     </article>
   );
 }
 
-export function LvPositionList({
-  sections,
-  collapsed,
-  expandedPositionIds,
-  offerLines,
-  supplierSourceDocumentIds,
-  activePositionId,
-  drafts,
-  decisions,
-  pendingOptionId,
-  scrollTop,
-  page,
-  pageSize,
-  total,
-  onScrollTop,
-  onToggleSection,
-  onTogglePosition,
-  onInfo,
-  onOpenBasisSource,
-  onOpenSupplierSource,
-  onSelectOption,
-  onShowWarnings,
-  onPage,
-  onPageSize
-}: {
+type LvPositionListProps = {
   sections: LvSection[];
   collapsed: Set<string>;
   expandedPositionIds: Set<string>;
   offerLines: Map<string, OfferLine>;
+  manualDisplayLabels?: Readonly<Record<string, string>>;
   supplierSourceDocumentIds?: ReadonlySet<string>;
   activePositionId: string | null;
   drafts: DecisionDraftRecord[];
@@ -531,10 +252,32 @@ export function LvPositionList({
   onShowWarnings?: () => void;
   onPage: (page: number) => void;
   onPageSize: (size: number) => void;
-}) {
-  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+};
+
+export function LvPositionList(props: LvPositionListProps) {
+  const {
+    sections,
+    collapsed,
+    expandedPositionIds,
+    offerLines,
+    manualDisplayLabels,
+    supplierSourceDocumentIds,
+    activePositionId,
+    drafts,
+    decisions,
+    scrollTop,
+    total,
+    onScrollTop,
+    onToggleSection,
+    onTogglePosition,
+    onOpenBasisSource
+  } = props;
+
   return (
-    <section className="lv-list-pane" data-lv-list-pane>
+    <section className="lv-list-pane" data-lv-list-pane data-position-navigator aria-label="Positionen">
+      <div className="lv-position-list-head">
+        <strong>Positionen</strong><span>{total}</span>
+      </div>
       <div
         className="lv-position-list"
         onScroll={(event) => onScrollTop(event.currentTarget.scrollTop)}
@@ -553,35 +296,26 @@ export function LvPositionList({
               data-lv-section={section.id}
               data-collapsed={isCollapsed ? "true" : "false"}
             >
-              <button
-                className="lv-list-section-row"
-                onClick={() => onToggleSection(section.id)}
-              >
-                <FolderTree size={17} />
+              <button className="lv-list-section-row" onClick={() => onToggleSection(section.id)}>
+                <FolderTree size={15} />
                 <strong>{section.title}</strong>
-                <span>
-                  {section.totalPositionCount ?? section.positions.length} Positionen
-                </span>
-                <ChevronDown size={16} className={isCollapsed ? "collapsed" : ""} />
+                <span>{section.totalPositionCount ?? section.positions.length}</span>
+                <ChevronDown size={15} className={isCollapsed ? "collapsed" : ""} />
               </button>
               {!isCollapsed
                 ? section.positions.map((position) => (
-                    <PositionGroup
+                    <PositionRow
                       key={position.basis.id}
                       position={position}
-                      expanded={expandedPositionIds.has(position.basis.id)}
                       active={activePositionId === position.basis.id}
+                      expanded={expandedPositionIds.has(position.basis.id)}
                       offerLines={offerLines}
+                      manualDisplayLabels={manualDisplayLabels}
                       supplierSourceDocumentIds={supplierSourceDocumentIds}
                       decision={latestPositionDecision(decisions, position.basis.id)}
                       draft={drafts.find((draft) => draft.positionId === position.basis.id)}
-                      pendingOptionId={pendingOptionId}
-                      onToggle={() => onTogglePosition(position)}
-                      onInfo={(option) => onInfo(position, option)}
+                      onOpen={() => onTogglePosition(position)}
                       onBasisSource={() => onOpenBasisSource(position)}
-                      onSupplierSource={(option) => onOpenSupplierSource(position, option)}
-                      onSelectOption={(option) => onSelectOption(position, option)}
-                      onShowWarnings={onShowWarnings}
                     />
                   ))
                 : null}
@@ -589,56 +323,9 @@ export function LvPositionList({
           );
         })}
       </div>
-      <footer className="lv-pagination" aria-label="Seitennavigation">
-        <span>
-          Zeige {total === 0 ? 0 : (page - 1) * pageSize + 1} bis{" "}
-          {Math.min(page * pageSize, total)} von {total} Positionen
-        </span>
-        <nav>
-          <button
-            onClick={() => onPage(Math.max(1, page - 1))}
-            disabled={page <= 1}
-            aria-label="Vorherige Seite"
-          >
-            <ChevronLeft size={16} />
-          </button>
-          {Array.from({ length: Math.min(pageCount, 7) }, (_, index) => {
-            const candidate =
-              pageCount <= 7
-                ? index + 1
-                : Math.min(
-                    pageCount - 6 + index,
-                    Math.max(1, page - 3) + index
-                  );
-            return (
-              <button
-                key={candidate}
-                className={candidate === page ? "active" : ""}
-                onClick={() => onPage(candidate)}
-              >
-                {candidate}
-              </button>
-            );
-          })}
-          <button
-            onClick={() => onPage(Math.min(pageCount, page + 1))}
-            disabled={page >= pageCount}
-            aria-label="Nächste Seite"
-          >
-            <ChevronRight size={16} />
-          </button>
-        </nav>
-        <select
-          value={pageSize}
-          onChange={(event) => onPageSize(Number(event.target.value))}
-          aria-label="Positionen pro Seite"
-        >
-          {[20, 50, 100].map((size) => (
-            <option key={size} value={size}>
-              {size} pro Seite
-            </option>
-          ))}
-        </select>
+      <footer className="lv-pagination lv-list-summary" aria-label="Listenstatus">
+        <span>{total} Positionen in der aktuellen Ansicht</span>
+        <span>Auswahl und Ansicht werden automatisch gespeichert</span>
       </footer>
     </section>
   );

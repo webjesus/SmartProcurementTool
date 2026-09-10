@@ -8,6 +8,7 @@ import {
   BrowserIndexedDbWorkspaceRepository,
   BrowserProjectDatabase
 } from "@/browser-projects/indexeddb";
+import { normalizeBrowserProjectRecord } from "@/browser-projects/types";
 import type {
   AnalysisRepository,
   DocumentBlobRepository,
@@ -53,7 +54,7 @@ export class OnPremServerProjectRepository
     const payload = await this.request<{ projects: BrowserProjectRecord[] }>(
       "/api/projects"
     );
-    return payload.projects;
+    return payload.projects.map(normalizeBrowserProjectRecord);
   }
   async save() {
     throw new Error("ON_PREM_PROJECT_WRITES_USE_EXISTING_SERVER_WORKFLOW");

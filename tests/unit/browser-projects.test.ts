@@ -13,7 +13,10 @@ import { BrowserProjectService } from "@/browser-projects/project-service";
 import { createBrowserProjectRepositories } from "@/browser-projects/repository-factory";
 import { buildBrowserAnalysis } from "@/browser-projects/browser-analysis";
 import { projectDisplayStatus } from "@/browser-projects/project-status";
-import type { BrowserProcessingRun } from "@/browser-projects/types";
+import type {
+  BrowserAnalysisSnapshot,
+  BrowserProcessingRun
+} from "@/browser-projects/types";
 
 const databases: BrowserProjectDatabase[] = [];
 
@@ -32,12 +35,35 @@ function createService() {
 }
 
 function pdf(name: string, lines: string[] = []) {
-  const body = `%PDF-1.4
-1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
-2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
-3 0 obj << /Type /Page /Parent 2 0 R >> endobj
-${lines.map((line) => `(${line}) Tj`).join("\n")}
-%%EOF`;
+  const escapedLines = lines.map((line) => line.replace(/([()\\])/g, "\\$1"));
+  const stream = [
+    "BT",
+    "/F1 11 Tf",
+    "46 790 Td",
+    ...escapedLines.flatMap((line, index) =>
+      index === 0 ? [`(${line}) Tj`] : ["0 -18 Td", `(${line}) Tj`]
+    ),
+    "ET"
+  ].join("\n");
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+    `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}\nendstream`,
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
+  ];
+  let body = "%PDF-1.4\n";
+  const offsets = [0];
+  objects.forEach((object, index) => {
+    offsets.push(Buffer.byteLength(body));
+    body += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  });
+  const xref = Buffer.byteLength(body);
+  body += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  offsets.slice(1).forEach((offset) => {
+    body += `${String(offset).padStart(10, "0")} 00000 n \n`;
+  });
+  body += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
   return new File([body], name, { type: "application/pdf" });
 }
 
@@ -52,6 +78,26 @@ afterEach(() => {
 });
 
 describe("browser-local project repositories", () => {
+  it("persists the complete project-directory metadata", async () => {
+    const { service } = createService();
+    const project = await service.createProject({
+      name: "Musterprojekt",
+      address: "Musterstraße 1, 70173 Stuttgart",
+      engineeringOffice: "Ingenieurbüro Muster",
+      architectureOffice: "Architektur Muster",
+      description: "Sanitär und Heizung"
+    });
+
+    expect(await service.getProject(project.projectId)).toMatchObject({
+      name: "Musterprojekt",
+      address: "Musterstraße 1, 70173 Stuttgart",
+      engineeringOffice: "Ingenieurbüro Muster",
+      architectureOffice: "Architektur Muster",
+      objectDescription: "Sanitär und Heizung"
+    });
+    expect(await service.listProjects()).toHaveLength(1);
+  });
+
   it("creates, autosaves, renames and keeps a stable illustration", async () => {
     const { service } = createService();
     const project = await service.createProject("Projekt A", "Haus 1");
@@ -194,6 +240,23 @@ describe("browser-local project repositories", () => {
     const { service } = createService();
     const source = await service.createProject("Original");
     await service.addFiles(source.projectId, [pdf("basis-lv.pdf")]);
+    await service.saveSelection({
+      projectId: source.projectId,
+      positionId: "position-a",
+      selectedSupplierOptionId: "option-a",
+      selectedLineIds: ["line-a"],
+      comment: "lokal",
+      updatedAt: new Date().toISOString()
+    });
+    await service.saveWorkspace({
+      projectId: source.projectId,
+      state: {
+        selectedBasisPositionId: "position-a",
+        selectedSupplierOptionId: "option-a",
+        inspectorOpen: true
+      },
+      updatedAt: new Date().toISOString()
+    });
     const copy = await service.duplicateProject(source.projectId);
 
     expect(copy.projectId).not.toBe(source.projectId);
@@ -204,6 +267,12 @@ describe("browser-local project repositories", () => {
     expect(
       await service.getDocumentBlob(copy.projectId, copiedDocuments[0].documentId)
     ).not.toBeNull();
+    expect(await service.listSelections(copy.projectId)).toEqual([]);
+    expect((await service.getWorkspace(copy.projectId))?.state).toMatchObject({
+      selectedBasisPositionId: null,
+      selectedSupplierOptionId: null,
+      inspectorOpen: false
+    });
 
     await service.deleteProject(source.projectId);
     expect(await service.getProject(source.projectId)).toBeNull();
@@ -211,7 +280,7 @@ describe("browser-local project repositories", () => {
     expect(await service.getProject(copy.projectId)).not.toBeNull();
   });
 
-  it("backs up and restores blobs, metadata, workspace and illustration", async () => {
+  it("restores PDFs and illustration while resetting stale workspace pointers", async () => {
     const { service } = createService();
     const source = await service.createProject("Backup");
     await service.addFiles(source.projectId, [pdf("basis-lv.pdf")]);
@@ -232,8 +301,13 @@ describe("browser-local project repositories", () => {
     expect(restored.projectId).not.toBe(source.projectId);
     expect(restored.illustrationId).toBe(source.illustrationId);
     expect(await service.listDocuments(restored.projectId)).toHaveLength(1);
-    expect((await service.getWorkspace(restored.projectId))?.state).toEqual({
-      page: 2
+    expect((await service.getWorkspace(restored.projectId))?.state).toMatchObject({
+      page: 1,
+      tableScroll: 0,
+      selectedBasisPositionId: null,
+      selectedSupplierOptionId: null,
+      sourceOverlay: null,
+      sourceViews: {}
     });
   });
 
@@ -242,6 +316,47 @@ describe("browser-local project repositories", () => {
     await expect(
       service.restoreProject(new Blob(["not-json"]))
     ).rejects.toThrow("CORRUPT_PROJECT_BACKUP");
+  });
+
+  it("rejects non-PDF backup blobs even when their checksum is valid", async () => {
+    const { service } = createService();
+    const source = await service.createProject("Backup");
+    await service.addFiles(source.projectId, [pdf("basis-lv.pdf")]);
+    const valid = JSON.parse(await (await service.backupProject(source.projectId)).text());
+    valid.documentBlobs[0].mimeType = "text/html";
+
+    await expect(
+      service.inspectBackup(new Blob([JSON.stringify(valid)]))
+    ).rejects.toThrow("INVALID_PROJECT_BACKUP");
+  });
+
+  it("rejects duplicate document links in a backup", async () => {
+    const { service } = createService();
+    const source = await service.createProject("Backup");
+    await service.addFiles(source.projectId, [pdf("basis-lv.pdf")]);
+    const valid = JSON.parse(await (await service.backupProject(source.projectId)).text());
+    valid.documents.push(valid.documents[0]);
+    valid.documentBlobs.push(valid.documentBlobs[0]);
+    valid.manifest.documentCount = 2;
+
+    await expect(
+      service.inspectBackup(new Blob([JSON.stringify(valid)]))
+    ).rejects.toThrow("INVALID_PROJECT_BACKUP");
+  });
+
+  it("rejects malformed files that only imitate the PDF header", async () => {
+    const { service } = createService();
+    const source = await service.createProject("Malformed");
+    const result = await service.addFiles(source.projectId, [
+      new File(["%PDF-not-a-real-pdf"], "broken.pdf", {
+        type: "application/pdf"
+      })
+    ]);
+
+    expect(result.items).toMatchObject([
+      { status: "REJECTED", message: "INVALID_PDF" }
+    ]);
+    expect(await service.listDocuments(source.projectId)).toEqual([]);
   });
 
   it("creates the complete migrated IndexedDB schema", async () => {
@@ -339,7 +454,8 @@ describe("browser-local project repositories", () => {
             pagesInspected: 1,
             pagesParsed: 0,
             ocrRequiredPages: 0,
-            matchingCandidates: 0
+            matchingCandidates: 0,
+            documents: []
           }
         }
       })
@@ -361,5 +477,151 @@ describe("browser-local project repositories", () => {
         processingFailureCode: "FAILED_NO_BASIS_POSITIONS"
       })
     ).toBe("FEHLER");
+  });
+
+  it("persists match reviews locally but does not trust unsigned backup decisions", async () => {
+    const { service } = createService();
+    const project = await service.createProject("Match review");
+    const added = await service.addFiles(project.projectId, [
+      pdf("basis-lv.pdf", [
+        "Angebotsaufforderung LV-Daten",
+        "Position 1.1.10 Hocheffizienz Umwaelzpumpe Heizkreis DN 25 2 St"
+      ]),
+      pdf("Lieferant-A-Angebot.pdf", [
+        "Angebot E-Preis Gesamtpreis",
+        "Position 4711 Umwaelzpumpe Heizkreis DN 25 Hocheffizienz 2 St"
+      ])
+    ]);
+    const [basisCandidate, supplierCandidate] = added.documents;
+    if (!basisCandidate || !supplierCandidate) {
+      throw new Error("Expected uploaded documents");
+    }
+    await service.updateDocument(project.projectId, basisCandidate.documentId, {
+      documentType: "BASIS_LV",
+      activeBasis: true,
+      manualRoleOverride: true,
+      manualBasisOverrideConfirmed: true
+    });
+    await service.updateDocument(project.projectId, supplierCandidate.documentId, {
+      documentType: "SUPPLIER_OFFER",
+      activeBasis: false,
+      supplierName: "Lieferant A",
+      manualRoleOverride: true
+    });
+    const documents = await service.listDocuments(project.projectId);
+    const basis = documents.find((document) => document.activeBasis);
+    const supplier = documents.find(
+      (document) => document.documentType === "SUPPLIER_OFFER"
+    );
+    if (!basis || !supplier) throw new Error("Expected classified documents");
+    const snapshot = buildBrowserAnalysis({
+      projectId: project.projectId,
+      documents,
+      result: {
+        basisLines: [
+          {
+            documentId: basis.documentId,
+            positionNumber: "1.1.10",
+            description: "Hocheffizienz Umwaelzpumpe Heizkreis DN 25",
+            quantity: 2,
+            unit: "St",
+            pageNumber: 1,
+            lineIndex: 0,
+            region: { x: 0.1, y: 0.1, width: 0.7, height: 0.08 }
+          }
+        ],
+        supplierLines: [
+          {
+            documentId: supplier.documentId,
+            positionNumber: "4711",
+            description: "Umwaelzpumpe Heizkreis DN 25 Hocheffizienz",
+            quantity: 2,
+            unit: "St",
+            pageNumber: 1,
+            lineIndex: 0,
+            supplier: "Lieferant A",
+            articleNumber: "P-25",
+            unitPrice: 100,
+            totalPrice: 200,
+            region: { x: 0.1, y: 0.2, width: 0.7, height: 0.08 }
+          }
+        ],
+        warnings: [],
+        diagnostics: {
+          pagesInspected: 2,
+          pagesParsed: 2,
+          ocrRequiredPages: 0,
+          matchingCandidates: 1,
+          documents: [
+            {
+              documentId: basis.documentId,
+              pagesInspected: 1,
+              candidatePositions: 1,
+              extractedPositions: 1,
+              missingSourceRegions: 0,
+              ocrProcessedPages: 0,
+              ocrFailedPages: 0,
+              ocrRequiredPages: 0,
+              multiPagePositions: 0
+            }
+          ]
+        }
+      }
+    });
+    await service.saveAnalysis(snapshot);
+    const link = snapshot.pilot.analysis?.matchLinks[0];
+    if (!link) throw new Error("Expected probable match");
+
+    await service.reviewMatch({
+      projectId: project.projectId,
+      analysisVersionId: snapshot.analysisVersionId,
+      matchLinkId: link.id,
+      positionId: link.basisPositionIds[0],
+      decision: "CONFIRMED",
+      operator: "Lokaler Benutzer",
+      comment: "Technisch geprüft",
+      updatedAt: "2026-08-31T12:30:00.000Z"
+    });
+
+    expect(await service.listMatchReviews(project.projectId)).toMatchObject([
+      {
+        matchLinkId: link.id,
+        decision: "CONFIRMED",
+        comment: "Technisch geprüft"
+      }
+    ]);
+    expect(
+      (await service.latestAnalysis(project.projectId))?.pilot.analysis
+        ?.supplierOptions[0]
+    ).toMatchObject({
+      matchingAccepted: true,
+      comparableTotal: 200
+    });
+
+    await expect(
+      service.reviewMatch({
+        projectId: project.projectId,
+        analysisVersionId: snapshot.analysisVersionId,
+        matchLinkId: link.id,
+        positionId: link.basisPositionIds[0],
+        decision: "INVALID" as "CONFIRMED",
+        operator: "Lokaler Benutzer",
+        comment: "x".repeat(2_001),
+        updatedAt: "not-a-date"
+      })
+    ).rejects.toThrow("INVALID_MATCH_REVIEW");
+
+    const backup = await service.backupProject(project.projectId);
+    const serializedBackup = JSON.parse(await backup.text()) as {
+      analysisSnapshots: BrowserAnalysisSnapshot[];
+    };
+    expect(
+      serializedBackup.analysisSnapshots[0]?.summary.documentDiagnostics
+    ).toEqual(snapshot.summary.documentDiagnostics);
+    const restored = await service.restoreProject(backup);
+    expect(restored.activeAnalysisVersionId).toBeNull();
+    expect(restored.status).not.toBe("BEREIT");
+    expect(await service.latestAnalysis(restored.projectId)).toBeNull();
+    expect(await service.listMatchReviews(restored.projectId)).toEqual([]);
   });
 });

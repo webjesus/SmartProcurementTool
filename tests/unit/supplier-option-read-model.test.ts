@@ -64,6 +64,27 @@ function option(lines: OfferLine[], overrides: Partial<SupplierOption> = {}): Su
 }
 
 describe("supplier option corrected read model regression fixtures", () => {
+  it("never labels a primary total as an extracted unit price", () => {
+    const primary = line("total-only", { quantity: 3, interpretedUnitPrice: null, interpretedTotalPrice: 300 });
+    expect(supplierPriceDisplay(option([primary], { primaryPrice: 300, pricedTotal: 300 }), [primary])).toMatchObject({ total: 300, unitPrice: null, arithmeticWarning: false });
+  });
+
+  it("respects prices quoted per one hundred units", () => {
+    const primary = line("per-hundred", { quantity: 200, priceBasis: 100, interpretedUnitPrice: 50, interpretedTotalPrice: null });
+    expect(supplierPriceDisplay(option([primary]), [primary])).toMatchObject({ total: 100, unitPrice: 50, state: "SYSTEM_CALCULATED_TOTAL", arithmeticWarning: false });
+    expect(supplierPriceDisplay(option([primary]), [{ ...primary, interpretedTotalPrice: 100 }]).arithmeticWarning).toBe(false);
+  });
+
+  it("does not invent a calculation from an invalid price basis", () => {
+    const primary = line("unknown-basis", { quantity: 200, priceBasis: null, interpretedUnitPrice: 50, interpretedTotalPrice: null });
+    expect(supplierPriceDisplay(option([primary]), [primary])).toMatchObject({ total: null, state: "UNIT_PRICE_ONLY" });
+  });
+
+  it("requires integer document pages for source navigation", () => {
+    const primary = line("fractional-page", { evidence: [{ ...evidence, pageNumber: 1.5 }] });
+    expect(validateSupplierSourceTarget({ option: option([primary]), line: primary, activeRevisionId: "revision-1", pageCount: 3 }).status).toBe("INVALID");
+  });
+
   it("keeps a source-confirmed Gienger GP and EP", () => {
     const primary = line("3000", {
       quantity: 6,
@@ -156,6 +177,25 @@ describe("supplier option corrected read model regression fixtures", () => {
     expect(noOfferValidity).toBe("EXPLICIT_NO_OFFER");
     expect(isSelectableSupplierOption(missingValidity)).toBe(false);
     expect(isSelectableSupplierOption(noOfferValidity)).toBe(false);
+  });
+
+  it("does not allow final supplier selection before an uncertain match is confirmed", () => {
+    const primary = line("probable", {
+      interpretedTotalPrice: 200
+    });
+    const validity = classifySupplierOption({
+      option: option([primary], {
+        matchingAccepted: false,
+        matchingReliable: false,
+        materialScopeStatus: "UNKNOWN",
+        comparableTotal: null
+      }),
+      lines: [primary],
+      sourceValid: true
+    });
+
+    expect(validity).toBe("MATCHING_REVIEW_REQUIRED");
+    expect(isSelectableSupplierOption(validity)).toBe(false);
   });
 
   it("supports page context without inventing an evidence rectangle", () => {

@@ -9,6 +9,7 @@ export type SupplierPriceState =
 export type SupplierPriceDisplay = {
   total: number | null;
   unitPrice: number | null;
+  priceBasis: number | null;
   state: SupplierPriceState;
   labelDe: string;
   scope: "SINGLE_LINE" | "PACKAGE_TOTAL" | "PRIMARY_ONLY" | "UNKNOWN";
@@ -31,6 +32,7 @@ export const SUPPLIER_OPTION_READ_MODEL_VERSION =
 export type SupplierOptionValidity =
   | "REAL_SELECTABLE_OPTION"
   | "REAL_OPTION_PRICE_MISSING"
+  | "MATCHING_REVIEW_REQUIRED"
   | "UNASSIGNED_SUPPLIER"
   | "EXPLICIT_NO_OFFER"
   | "NO_RELEVANT_DOCUMENT";
@@ -100,7 +102,12 @@ export function supplierPriceDisplay(
   lines: readonly OfferLine[]
 ): SupplierPriceDisplay {
   const primary = primarySupplierLine(lines);
-  const unitPrice = primary?.interpretedUnitPrice ?? option.primaryPrice;
+  // primaryPrice is a total, not an EP. Unknown unit prices stay unknown.
+  const unitPrice = primary?.interpretedUnitPrice ?? null;
+  const priceBasis = primary?.priceBasis != null && Number.isFinite(primary.priceBasis) && primary.priceBasis > 0 ? primary.priceBasis : null;
+  const calculatedTotal = unitPrice !== null && Number.isFinite(unitPrice) &&
+    primary?.quantity != null && Number.isFinite(primary.quantity) && priceBasis !== null
+    ? Math.round(unitPrice * primary.quantity / priceBasis * 100) / 100 : null;
   const optionTotal = option.comparableTotal ?? option.pricedTotal;
   const requiredLines = requiredPricedLines(lines);
   const sourceTotals = requiredLines
@@ -118,18 +125,17 @@ export function supplierPriceDisplay(
   const arithmeticWarning =
     primary?.interpretedTotalPrice !== null &&
     primary?.interpretedTotalPrice !== undefined &&
-    unitPrice !== null &&
-    unitPrice !== undefined &&
-    primary.quantity !== null &&
-    Math.abs(primary.interpretedTotalPrice - unitPrice * primary.quantity) >
+    calculatedTotal !== null &&
+    Math.abs(primary.interpretedTotalPrice - calculatedTotal) >
       Math.max(0.02, Math.abs(primary.interpretedTotalPrice) * 0.001);
 
   if (optionTotalConfirmed) {
     return {
       total: optionTotal,
       unitPrice,
+      priceBasis,
       state: "SOURCE_CONFIRMED_TOTAL",
-      labelDe: "Gesamtpreis bestätigt",
+      labelDe: "Gesamtpreis laut Quelle",
       scope:
         requiredLines.length > 1
           ? "PACKAGE_TOTAL"
@@ -146,41 +152,37 @@ export function supplierPriceDisplay(
     return {
       total: primary.interpretedTotalPrice,
       unitPrice,
+      priceBasis,
       state: "SOURCE_CONFIRMED_TOTAL",
-      labelDe: "Gesamtpreis bestätigt",
+      labelDe: "Gesamtpreis laut Quelle",
       scope: lines.length > 1 ? "PRIMARY_ONLY" : "SINGLE_LINE",
       arithmeticWarning
     };
   }
   if (optionTotal !== null && requiredLines.length > 0) {
     const derivedFromUnitPrice =
-      unitPrice !== null &&
-      unitPrice !== undefined &&
-      primary?.quantity !== null &&
-      primary?.quantity !== undefined &&
-      Math.abs(optionTotal - unitPrice * primary.quantity) <= 0.02;
+      calculatedTotal !== null && Math.abs(optionTotal - calculatedTotal) <= 0.02;
     return {
       total: optionTotal,
       unitPrice,
+      priceBasis,
       state: "SYSTEM_CALCULATED_TOTAL",
       labelDe: derivedFromUnitPrice
-        ? "Aus EP × Menge berechnet"
+        ? priceBasis === 1 ? "Aus EP × Menge berechnet" : "Aus EP × Menge / Preisbasis berechnet"
         : "Berechneter Gesamtpreis",
       scope: requiredLines.length > 1 ? "PACKAGE_TOTAL" : "SINGLE_LINE",
       arithmeticWarning
     };
   }
   if (
-    unitPrice !== null &&
-    unitPrice !== undefined &&
-    primary?.quantity !== null &&
-    primary?.quantity !== undefined
+    calculatedTotal !== null
   ) {
     return {
-      total: Math.round(unitPrice * primary.quantity * 100) / 100,
+      total: calculatedTotal,
       unitPrice,
+      priceBasis,
       state: "SYSTEM_CALCULATED_TOTAL",
-      labelDe: "Aus EP × Menge berechnet",
+      labelDe: priceBasis === 1 ? "Aus EP × Menge berechnet" : "Aus EP × Menge / Preisbasis berechnet",
       scope: lines.length > 1 ? "PRIMARY_ONLY" : "SINGLE_LINE",
       arithmeticWarning
     };
@@ -189,6 +191,7 @@ export function supplierPriceDisplay(
     return {
       total: null,
       unitPrice,
+      priceBasis,
       state: "UNIT_PRICE_ONLY",
       labelDe: "Gesamtpreis nicht gefunden",
       scope: lines.length > 1 ? "PRIMARY_ONLY" : "SINGLE_LINE",
@@ -198,6 +201,7 @@ export function supplierPriceDisplay(
   return {
     total: null,
     unitPrice: null,
+    priceBasis,
     state: "MISSING",
     labelDe: "Preis nicht gefunden",
     scope: "UNKNOWN",
@@ -223,6 +227,7 @@ export function validateSupplierSourceTarget(input: {
   const evidence = input.line.evidence.find(
     (candidate) =>
       candidate.documentId === input.option.supplierDocumentId &&
+      Number.isInteger(candidate.pageNumber) &&
       candidate.pageNumber > 0 &&
       candidate.pageNumber <= pageCount
   );
@@ -263,6 +268,9 @@ export function classifySupplierOption(input: {
     input.option.materialScopeStatus === "EXPLICIT_NO_OFFER"
   ) {
     return "EXPLICIT_NO_OFFER";
+  }
+  if (!input.option.matchingAccepted && !input.option.matchingReliable) {
+    return "MATCHING_REVIEW_REQUIRED";
   }
   const hasProduct = input.lines.some(
     (line) =>

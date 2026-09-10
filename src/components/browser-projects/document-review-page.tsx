@@ -9,6 +9,7 @@ import {
   FilePlus2,
   FileText,
   RefreshCw,
+  ScanText,
   ShieldCheck,
   Trash2,
   X
@@ -34,6 +35,10 @@ import type {
   BrowserProjectRecord
 } from "@/browser-projects/types";
 import { AddFilesDialog } from "@/components/browser-projects/add-files-dialog";
+import {
+  SafePdfPreview,
+  type SafePdfPreviewValue
+} from "@/components/browser-projects/safe-pdf-preview";
 
 const documentTypes: Array<{ value: BrowserDocumentType; label: string }> = [
   { value: "BASIS_LV", label: "Basis-LV" },
@@ -117,6 +122,8 @@ export function DocumentReviewPage({ projectId }: { projectId: string }) {
     document: BrowserDocumentRecord;
     file: File;
   } | null>(null);
+  const [previewValue, setPreviewValue] =
+    useState<SafePdfPreviewValue | null>(null);
   const replacementId = useRef<string | null>(null);
   const replaceInput = useRef<HTMLInputElement>(null);
 
@@ -218,12 +225,10 @@ export function DocumentReviewPage({ projectId }: { projectId: string }) {
     });
   }
 
-  async function preview(documentId: string) {
-    const blob = await service.getDocumentBlob(projectId, documentId);
+  async function preview(document: BrowserDocumentRecord) {
+    const blob = await service.getDocumentBlob(projectId, document.documentId);
     if (!blob) return;
-    const url = URL.createObjectURL(blob);
-    window.open(url, "_blank", "noopener,noreferrer");
-    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    setPreviewValue({ blob, title: document.originalFileName });
   }
 
   async function replace(file: File | undefined) {
@@ -496,10 +501,17 @@ export function DocumentReviewPage({ projectId }: { projectId: string }) {
                 </td>
                 <td>{document.pageCount}</td>
                 <td>
-                  {document.documentType === "SCAN_OCR_REQUIRED" ? (
-                    <span className="classification-confidence confidence-low">
-                      <AlertTriangle size={15} /> Scan erkannt · OCR erforderlich
+                  {document.scanState === "OCR_AVAILABLE" ? (
+                    <span className="classification-confidence confidence-medium">
+                      <ScanText size={15} /> Lokal per OCR gelesen · Prüfung
+                      erforderlich
                     </span>
+                  ) : document.documentType === "SCAN_OCR_REQUIRED" ? (
+                    <div className="ocr-required-status">
+                      <span className="classification-confidence confidence-low">
+                        <AlertTriangle size={15} /> Automatische OCR im Verarbeitungslauf · Prüfung erforderlich
+                      </span>
+                    </div>
                   ) : (
                     <span
                       className={`classification-confidence confidence-${document.classificationDimensions.documentRole.toLocaleLowerCase("de")}`}
@@ -515,6 +527,15 @@ export function DocumentReviewPage({ projectId }: { projectId: string }) {
                       Disziplin {document.classificationDimensions.discipline}
                     </span>
                   )}
+                  {document.scanState === "OCR_AVAILABLE" ? (
+                    <small className="ocr-audit-note">
+                      {document.ocrSampledPages ?? 0} Stichprobenseiten ·{" "}
+                      {document.ocrMeanConfidence === null ||
+                      document.ocrMeanConfidence === undefined
+                        ? "Konfidenz offen"
+                        : `${Math.round(document.ocrMeanConfidence)} % OCR-Konfidenz`}
+                    </small>
+                  ) : null}
                   {document.documentType === "SCAN_OCR_REQUIRED" ? (
                     <label className="ocr-exclusion">
                       <input
@@ -532,7 +553,7 @@ export function DocumentReviewPage({ projectId }: { projectId: string }) {
                 </td>
                 <td>
                   <button
-                    onClick={() => void preview(document.documentId)}
+                    onClick={() => void preview(document)}
                     aria-label={`Vorschau ${document.originalFileName}`}
                   >
                     <Eye size={16} />
@@ -687,6 +708,12 @@ export function DocumentReviewPage({ projectId }: { projectId: string }) {
           void reload();
         }}
       />
+      {previewValue ? (
+        <SafePdfPreview
+          value={previewValue}
+          onClose={() => setPreviewValue(null)}
+        />
+      ) : null}
     </div>
   );
 }

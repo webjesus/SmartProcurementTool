@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  AlertTriangle,
   ChevronLeft,
   ChevronRight,
   Eye,
@@ -14,22 +15,30 @@ import {
   RefreshCw,
   X
 } from "lucide-react";
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState
-} from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { formatCurrency, formatNumber, lineRoleLabel } from "./format";
 import { supplierDisplayRoleLabel } from "@/domain/supplier-option-read-model";
 import { resolveSupplierBrand } from "@/domain/brand-registry";
 import type { SourceRecord } from "./types";
 import { BrandMark } from "./brand-mark";
 import { BoundedAsyncCache } from "./pdf-document-cache";
+import { evidenceFitScale } from "./workspace-layout";
+import {
+  locatePdfSourceRegion,
+  padPdfSourceRegion,
+  type NormalizedPdfRegion,
+  type PdfTextGeometryItem
+} from "@/pdf/source-region";
+import { browserPdfLoadingOptions, configureBrowserPdfJs } from "@/pdf/browser-pdfjs-config";
 
 type RenderStatus = "loading" | "ready" | "error";
+export type PdfEvidencePresentationState =
+  | "LOADING"
+  | "VISIBLE_VERIFIED"
+  | "VISIBLE_UNCONFIRMED"
+  | "ABSENT"
+  | "OFF_PAGE"
+  | "ERROR";
 export type FitMode = "CONTEXT" | "EVIDENCE" | "PAGE" | "WIDTH" | "CUSTOM";
 export type SourceViewState = {
   pageNumber: number;
@@ -39,18 +48,183 @@ export type SourceViewState = {
   scrollTop: number;
 };
 
+export function sourceUsesOcr(source: Pick<SourceRecord, "evidence">): boolean {
+  return source.evidence.some((evidence) =>
+    evidence.textItemIds.some((id) => id.startsWith("ocr-word:"))
+  );
+}
+
+export function sourceOcrLabel(
+  source: Pick<SourceRecord, "evidence">
+): "OCR · manuell prüfen" | "OCR · manuell bestätigt" | null {
+  if (!sourceUsesOcr(source)) return null;
+  return source.evidence.length > 0 &&
+    source.evidence.every((evidence) => evidence.status === "VERIFIED_VISUAL")
+    ? "OCR · manuell bestätigt"
+    : "OCR · manuell prüfen";
+}
+
+export function resolveInlineSourceFitMode(initialFitMode?: FitMode | null): FitMode {
+  return initialFitMode ?? "WIDTH";
+}
+
+export function toggleInlineSourceFitMode(current: FitMode): "EVIDENCE" | "WIDTH" {
+  return current === "EVIDENCE" ? "WIDTH" : "EVIDENCE";
+}
+
+type ScrollPosition = { left: number; top: number };
+type ContainerSize = { width: number; height: number };
+type PdfRenderIdentity = {
+  sourceKey: string;
+  documentRevisionId: string;
+  pageNumber: number;
+  renderSequence: number | string;
+};
+type PdfEvidenceFrame = {
+  region: NormalizedPdfRegion;
+  origin: "text-layer" | "stored";
+};
+type CommittedPdfEvidenceFrame = PdfRenderIdentity & PdfEvidenceFrame;
+
+export function resolvePdfEvidenceFrames({
+  requested,
+  status,
+  committed
+}: {
+  requested: PdfRenderIdentity;
+  status: RenderStatus;
+  committed: CommittedPdfEvidenceFrame | null;
+}): PdfEvidenceFrame[] {
+  if (
+    status !== "ready" ||
+    !committed ||
+    committed.sourceKey !== requested.sourceKey ||
+    committed.documentRevisionId !== requested.documentRevisionId ||
+    committed.pageNumber !== requested.pageNumber ||
+    committed.renderSequence !== requested.renderSequence
+  ) {
+    return [];
+  }
+  return [{ region: committed.region, origin: committed.origin }];
+}
+
+export function resolvePdfEvidencePresentation({
+  renderStatus,
+  pageNumber,
+  evidencePageNumber,
+  visibleFrameCount,
+  evidenceStatuses
+}: {
+  renderStatus: RenderStatus;
+  pageNumber: number;
+  evidencePageNumber: number;
+  visibleFrameCount: number;
+  evidenceStatuses: readonly string[];
+}): PdfEvidencePresentationState {
+  if (renderStatus === "error") return "ERROR";
+  if (pageNumber !== evidencePageNumber) return "OFF_PAGE";
+  if (renderStatus === "loading") return "LOADING";
+  if (visibleFrameCount <= 0) return "ABSENT";
+  const verifiedStatuses = new Set(["VERIFIED_NATIVE", "VERIFIED_VISUAL"]);
+  return evidenceStatuses.length > 0 &&
+    evidenceStatuses.every((status) => verifiedStatuses.has(status))
+    ? "VISIBLE_VERIFIED"
+    : "VISIBLE_UNCONFIRMED";
+}
+
+export function stableScrollState(current: ScrollPosition, next: ScrollPosition): ScrollPosition {
+  return current.left === next.left && current.top === next.top ? current : next;
+}
+
+export function stableContainerSize(current: ContainerSize, next: ContainerSize): ContainerSize {
+  return current.width === next.width && current.height === next.height ? current : next;
+}
+
+export function resolveSourcePageChange({
+  currentPage,
+  requestedPage,
+  pageCount,
+  scroll
+}: {
+  currentPage: number;
+  requestedPage: number;
+  pageCount: number;
+  scroll: ScrollPosition;
+}): { pageNumber: number; scroll: ScrollPosition } {
+  const pageNumber = clamp(Math.round(requestedPage), 1, pageCount);
+  return {
+    pageNumber,
+    scroll: pageNumber === currentPage ? scroll : { left: 0, top: 0 }
+  };
+}
+
+export function shouldCenterPdfEvidence({
+  pageNumber,
+  evidencePageNumber,
+  hasEvidence,
+  initialScroll
+}: {
+  pageNumber: number;
+  evidencePageNumber: number;
+  hasEvidence: boolean;
+  initialScroll: ScrollPosition;
+}): boolean {
+  return (
+    hasEvidence &&
+    pageNumber === evidencePageNumber &&
+    initialScroll.left === 0 &&
+    initialScroll.top === 0
+  );
+}
+
+function useDeferredScrollPosition(initial: ScrollPosition) {
+  const [scroll, setScrollState] = useState(initial);
+  const timeoutRef = useRef<number | null>(null);
+
+  const setScroll = useCallback((next: ScrollPosition) => {
+    if (timeoutRef.current !== null) {
+      window.clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+    setScrollState((current) => stableScrollState(current, next));
+  }, []);
+
+  const deferScroll = useCallback((next: ScrollPosition) => {
+    if (timeoutRef.current !== null) {
+      window.clearTimeout(timeoutRef.current);
+    }
+    timeoutRef.current = window.setTimeout(() => {
+      timeoutRef.current = null;
+      setScrollState((current) => stableScrollState(current, next));
+    }, 80);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (timeoutRef.current !== null) {
+        window.clearTimeout(timeoutRef.current);
+      }
+    },
+    []
+  );
+
+  return [scroll, setScroll, deferScroll] as const;
+}
+
 type PdfDocumentProxyLike = {
   numPages: number;
   getPage: (pageNumber: number) => Promise<{
     getViewport: (input: { scale: number }) => {
       width: number;
       height: number;
+      transform: number[];
     };
     render: (input: {
       canvasContext: CanvasRenderingContext2D;
       viewport: { width: number; height: number };
       canvas: HTMLCanvasElement;
     }) => { cancel: () => void; promise: Promise<void> };
+    getTextContent: () => Promise<{ items: unknown[] }>;
   }>;
 };
 type CachedPdfDocument = {
@@ -66,12 +240,12 @@ async function loadPdf(source: SourceRecord): Promise<CachedPdfDocument> {
     `${source.documentRevisionId}:${url}`,
     async () => {
       const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-      pdfjs.GlobalWorkerOptions.workerSrc = "/api/local/pdf-worker";
+      configureBrowserPdfJs(pdfjs);
       const response = await fetch(url, { cache: "no-store" });
       if (!response.ok) throw new Error(`PDF ${response.status}`);
       const bytes = new Uint8Array(await response.arrayBuffer());
       if (bytes.byteLength === 0) throw new Error("PDF ist leer.");
-      const task = pdfjs.getDocument({ data: bytes });
+      const task = pdfjs.getDocument(browserPdfLoadingOptions(bytes));
       const document = await task.promise;
       return {
         document: document as unknown as PdfDocumentProxyLike,
@@ -114,13 +288,50 @@ function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
 }
 
+function isPdfTextGeometryItem(value: unknown): value is PdfTextGeometryItem {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<PdfTextGeometryItem>;
+  return (
+    typeof candidate.str === "string" &&
+    typeof candidate.width === "number" &&
+    typeof candidate.height === "number" &&
+    Array.isArray(candidate.transform)
+  );
+}
+
+function isSyntheticBrowserRegion(source: SourceRecord): boolean {
+  return source.evidence.some((evidence) =>
+    evidence.textItemIds.some((id) => /^line:\d+$/u.test(id))
+  );
+}
+
+export function evidenceSourceKeyForPage(
+  sources: readonly SourceRecord[],
+  activeSource: SourceRecord,
+  pageNumber: number
+): string | null {
+  return (
+    sources.find(
+      (source) =>
+        source.documentId === activeSource.documentId &&
+        source.kind === activeSource.kind &&
+        source.positionNumber === activeSource.positionNumber &&
+        source.supplierOptionId === activeSource.supplierOptionId &&
+        source.lineId === activeSource.lineId &&
+        source.pageNumber === pageNumber
+    )?.key ?? null
+  );
+}
+
 function PdfCanvas({
   source,
   pageNumber,
   zoom,
   fitMode,
   showHighlight,
+  renderStatus,
   onStatus,
+  onEvidencePresentation,
   onPageRendered,
   initialScroll,
   onScrollChange
@@ -130,7 +341,9 @@ function PdfCanvas({
   zoom: number;
   fitMode: FitMode;
   showHighlight: boolean;
+  renderStatus: RenderStatus;
   onStatus: (status: RenderStatus, message?: string) => void;
+  onEvidencePresentation?: (state: PdfEvidencePresentationState) => void;
   onPageRendered: (dimensions: { width: number; height: number }) => void;
   initialScroll: { left: number; top: number };
   onScrollChange: (scroll: { left: number; top: number }) => void;
@@ -138,18 +351,51 @@ function PdfCanvas({
   const stageRef = useRef<HTMLDivElement>(null);
   const pageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const renderSequence = useRef(0);
+  const initialScrollRef = useRef(initialScroll);
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
   const [renderedSize, setRenderedSize] = useState({ width: 0, height: 0 });
+  const [committedEvidenceFrame, setCommittedEvidenceFrame] =
+    useState<CommittedPdfEvidenceFrame | null>(null);
+  const requestedRender = useMemo<PdfRenderIdentity>(
+    () => ({
+      sourceKey: source.key,
+      documentRevisionId: source.documentRevisionId,
+      pageNumber,
+      renderSequence: [
+        source.key,
+        source.documentRevisionId,
+        pageNumber,
+        containerSize.width,
+        containerSize.height,
+        fitMode,
+        zoom
+      ].join("|")
+    }),
+    [
+      containerSize.height,
+      containerSize.width,
+      fitMode,
+      pageNumber,
+      source.documentRevisionId,
+      source.key,
+      zoom
+    ]
+  );
+
+  useLayoutEffect(() => {
+    initialScrollRef.current = initialScroll;
+  }, [initialScroll]);
 
   useLayoutEffect(() => {
     const element = stageRef.current;
     if (!element) return;
-    const update = () =>
-      setContainerSize({
+    const update = () => {
+      const next = {
         width: element.clientWidth,
         height: element.clientHeight
-      });
+      };
+      setContainerSize((current) => stableContainerSize(current, next));
+    };
     update();
     const observer = new ResizeObserver(update);
     observer.observe(element);
@@ -160,77 +406,105 @@ function PdfCanvas({
     if (!containerSize.width || !containerSize.height || !canvasRef.current) return;
     let cancelled = false;
     let renderTask: { cancel: () => void; promise: Promise<void> } | null = null;
-    const sequence = ++renderSequence.current;
-
     async function renderPage() {
       onStatus("loading");
       try {
-        const { document } = await loadPdf(source);
-        if (pageNumber < 1 || pageNumber > document.numPages) {
+        const { document: pdfDocument } = await loadPdf(source);
+        if (pageNumber < 1 || pageNumber > pdfDocument.numPages) {
           throw new Error(`Seite ${pageNumber} ist nicht vorhanden.`);
         }
-        const page = await document.getPage(pageNumber);
+        const page = await pdfDocument.getPage(pageNumber);
         const baseViewport = page.getViewport({ scale: 1 });
-        const availableWidth = Math.max(240, containerSize.width - 40);
-        const availableHeight = Math.max(240, containerSize.height - 40);
+        const textContent = await page.getTextContent();
+        const locatedRegion = locatePdfSourceRegion({
+          items: textContent.items.filter(isPdfTextGeometryItem),
+          pageWidth: baseViewport.width,
+          pageHeight: baseViewport.height,
+          viewportTransform: baseViewport.transform,
+          positionNumber: source.positionNumber,
+          supplierPositionNumber: source.supplierPositionNumber,
+          description: `${source.title} ${source.description}`
+        });
+        const storedRegion = source.evidence[0]?.region;
+        const evidence =
+          locatedRegion ??
+          (!isSyntheticBrowserRegion(source) && storedRegion?.width > 0 && storedRegion.height > 0
+            ? storedRegion
+            : null);
+        const availableWidth = Math.max(240, containerSize.width - 16);
+        const availableHeight = Math.max(240, containerSize.height - 16);
         const pageFit = Math.min(
           availableWidth / baseViewport.width,
           availableHeight / baseViewport.height
         );
         const widthFit = availableWidth / baseViewport.width;
-        const evidence = source.evidence[0]?.region;
         const contextFit = evidence
           ? Math.min(
               widthFit,
-              availableHeight /
-                (baseViewport.height *
-                  clamp(evidence.height + 0.52, 0.65, 1))
+              availableHeight / (baseViewport.height * clamp(evidence.height + 0.52, 0.65, 1))
             )
           : widthFit;
         const evidenceFit = evidence
-          ? Math.min(
-              availableWidth /
-                (baseViewport.width * Math.max(evidence.width / 0.82, 0.34)),
-              availableHeight /
-                (baseViewport.height * Math.max(evidence.height / 0.46, 0.2))
-            )
+          ? evidenceFitScale({ width: availableWidth, height: availableHeight }, baseViewport, evidence)
           : widthFit;
         const fitScale =
           fitMode === "CONTEXT"
             ? contextFit
             : fitMode === "PAGE"
-            ? pageFit
-            : fitMode === "WIDTH"
-              ? widthFit
-              : fitMode === "EVIDENCE"
-                ? evidenceFit
-                : widthFit;
+              ? pageFit
+              : fitMode === "WIDTH"
+                ? widthFit
+                : fitMode === "EVIDENCE"
+                  ? evidenceFit
+                  : widthFit;
         const cssScale = clamp(fitScale * zoom, 0.5, 3);
         const viewport = page.getViewport({ scale: cssScale });
-        const canvas = canvasRef.current;
-        if (!canvas || cancelled || sequence !== renderSequence.current) return;
+        if (!canvasRef.current || cancelled) {
+          return;
+        }
         const ratio = Math.max(1, window.devicePixelRatio || 1);
-        canvas.width = Math.max(1, Math.floor(viewport.width * ratio));
-        canvas.height = Math.max(1, Math.floor(viewport.height * ratio));
-        canvas.style.width = `${viewport.width}px`;
-        canvas.style.height = `${viewport.height}px`;
-        const context = canvas.getContext("2d", { alpha: false });
+        const renderCanvas = document.createElement("canvas");
+        renderCanvas.width = Math.max(1, Math.floor(viewport.width * ratio));
+        renderCanvas.height = Math.max(1, Math.floor(viewport.height * ratio));
+        const context = renderCanvas.getContext("2d", { alpha: false });
         if (!context) throw new Error("Canvas ist nicht verfügbar.");
         context.setTransform(ratio, 0, 0, ratio, 0, 0);
         renderTask = page.render({
           canvasContext: context,
           viewport,
-          canvas
+          canvas: renderCanvas
         });
         await renderTask.promise;
-        if (cancelled || sequence !== renderSequence.current) return;
-        if (isCanvasBlank(canvas)) {
+        if (cancelled) return;
+        if (isCanvasBlank(renderCanvas)) {
           throw new Error("Die Dokumentseite enthält keine sichtbaren Pixel.");
         }
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        canvas.width = renderCanvas.width;
+        canvas.height = renderCanvas.height;
+        canvas.style.width = `${viewport.width}px`;
+        canvas.style.height = `${viewport.height}px`;
+        const visibleContext = canvas.getContext("2d", { alpha: false });
+        if (!visibleContext) throw new Error("Canvas ist nicht verfügbar.");
+        visibleContext.setTransform(1, 0, 0, 1, 0, 0);
+        visibleContext.fillStyle = "#fff";
+        visibleContext.fillRect(0, 0, canvas.width, canvas.height);
+        visibleContext.drawImage(renderCanvas, 0, 0);
+        setCommittedEvidenceFrame(
+          evidence
+            ? {
+                ...requestedRender,
+                region: evidence,
+                origin: locatedRegion ? "text-layer" : "stored"
+              }
+            : null
+        );
         const dimensions = { width: viewport.width, height: viewport.height };
         setRenderedSize(dimensions);
         onPageRendered(dimensions);
         onStatus("ready");
+        const initialScroll = initialScrollRef.current;
         if (initialScroll.left > 0 || initialScroll.top > 0) {
           requestAnimationFrame(() => {
             stageRef.current?.scrollTo({
@@ -240,18 +514,20 @@ function PdfCanvas({
             });
           });
         } else if (
-          (fitMode === "CONTEXT" || fitMode === "EVIDENCE") &&
           evidence &&
-          pageNumber === source.pageNumber
+          shouldCenterPdfEvidence({
+            pageNumber,
+            evidencePageNumber: source.pageNumber,
+            hasEvidence: Boolean(evidence),
+            initialScroll
+          })
         ) {
           requestAnimationFrame(() => {
             requestAnimationFrame(() => {
               const stage = stageRef.current;
               if (!stage || cancelled) return;
-              const targetX =
-                (evidence.x + evidence.width / 2) * viewport.width + 20;
-              const targetY =
-                (evidence.y + evidence.height / 2) * viewport.height + 20;
+              const targetX = (evidence.x + evidence.width / 2) * viewport.width + 20;
+              const targetY = (evidence.y + evidence.height / 2) * viewport.height + 20;
               stage.scrollTo({
                 left: Math.max(0, targetX - stage.clientWidth / 2),
                 top: Math.max(0, targetY - stage.clientHeight / 2),
@@ -263,9 +539,7 @@ function PdfCanvas({
       } catch (error) {
         if (cancelled) return;
         const name =
-          typeof error === "object" && error && "name" in error
-            ? String(error.name)
-            : "";
+          typeof error === "object" && error && "name" in error ? String(error.name) : "";
         if (name === "RenderingCancelledException") return;
         onStatus(
           "error",
@@ -277,7 +551,6 @@ function PdfCanvas({
     void renderPage();
     return () => {
       cancelled = true;
-      renderSequence.current += 1;
       renderTask?.cancel();
     };
   }, [
@@ -286,15 +559,43 @@ function PdfCanvas({
     fitMode,
     onPageRendered,
     onStatus,
-    initialScroll.left,
-    initialScroll.top,
     pageNumber,
+    requestedRender,
     source,
     zoom
   ]);
 
-  const activeEvidence =
-    pageNumber === source.pageNumber ? source.evidence : [];
+  const activeEvidence = (
+    pageNumber === source.pageNumber
+      ? resolvePdfEvidenceFrames({
+          requested: requestedRender,
+          status: showHighlight ? "ready" : "loading",
+          committed: committedEvidenceFrame
+        })
+      : []
+  )
+    .map((frame) => ({
+      id: source.evidence[0]?.id ?? `${source.key}:located`,
+      region: padPdfSourceRegion(frame.region),
+      origin: frame.origin
+    }))
+    .filter(
+      (
+        evidence
+      ): evidence is typeof evidence & {
+        region: NormalizedPdfRegion;
+      } => evidence.region !== null
+    );
+  const evidencePresentation = resolvePdfEvidencePresentation({
+    renderStatus,
+    pageNumber,
+    evidencePageNumber: source.pageNumber,
+    visibleFrameCount: activeEvidence.length,
+    evidenceStatuses: source.evidence.map((evidence) => evidence.status)
+  });
+  useEffect(() => {
+    onEvidencePresentation?.(evidencePresentation);
+  }, [evidencePresentation, onEvidencePresentation]);
 
   return (
     <div
@@ -320,19 +621,16 @@ function PdfCanvas({
                 key={evidence.id}
                 className={`source-evidence-region ${index === 0 ? "active" : ""}`}
                 data-evidence-region
+                data-region-origin={evidence.origin}
                 style={{
                   left: `${clamp(evidence.region.x, 0, 1) * 100}%`,
                   top: `${clamp(evidence.region.y, 0, 1) * 100}%`,
-                  width: `${clamp(
-                    evidence.region.width,
-                    0,
-                    1 - clamp(evidence.region.x, 0, 1)
-                  ) * 100}%`,
-                  height: `${clamp(
-                    evidence.region.height,
-                    0,
-                    1 - clamp(evidence.region.y, 0, 1)
-                  ) * 100}%`
+                  width: `${
+                    clamp(evidence.region.width, 0, 1 - clamp(evidence.region.x, 0, 1)) * 100
+                  }%`,
+                  height: `${
+                    clamp(evidence.region.height, 0, 1 - clamp(evidence.region.y, 0, 1)) * 100
+                  }%`
                 }}
               />
             ))
@@ -357,23 +655,74 @@ export function InlineSourceViewer({
   onSelect: (key: string) => void;
   onFullscreen: () => void;
 }) {
-  const activeSource =
-    sources.find((source) => source.key === activeKey) ?? sources[0];
+  const activeSource = sources.find((source) => source.key === activeKey) ?? sources[0];
+  const ocrLabel = activeSource ? sourceOcrLabel(activeSource) : null;
   const [pageNumber, setPageNumber] = useState(
     initialView?.pageNumber ?? activeSource?.pageNumber ?? 1
   );
   const [zoom, setZoom] = useState(initialView?.zoom ?? 1);
-  const [fitMode, setFitMode] = useState<FitMode>(
-    initialView?.fitMode ?? "CONTEXT"
+  const [fitMode, setFitMode] = useState<FitMode>(() =>
+    resolveInlineSourceFitMode(initialView?.fitMode)
   );
-  const [scroll, setScroll] = useState({
+  const [scroll, setScroll, updateScroll] = useDeferredScrollPosition({
     left: initialView?.scrollLeft ?? 0,
     top: initialView?.scrollTop ?? 0
   });
   const [renderStatus, setRenderStatus] = useState<RenderStatus>("loading");
   const [renderError, setRenderError] = useState("");
+  const [hasRendered, setHasRendered] = useState(false);
+  const [evidencePresentation, setEvidencePresentation] =
+    useState<PdfEvidencePresentationState>("LOADING");
+  const activeSourceIdentity = activeSource
+    ? `${activeSource.key}:${activeSource.documentRevisionId}`
+    : undefined;
+  const renderedSourceIdentityRef = useRef(activeSourceIdentity);
   const sourceIndex = sources.findIndex((source) => source.key === activeKey);
-
+  const changePage = useCallback(
+    (requestedPage: number) => {
+      const next = resolveSourcePageChange({
+        currentPage: pageNumber,
+        requestedPage,
+        pageCount: activeSource?.pageCount ?? 1,
+        scroll
+      });
+      setScroll(next.scroll);
+      const evidenceSourceKey = activeSource
+        ? evidenceSourceKeyForPage(sources, activeSource, next.pageNumber)
+        : null;
+      if (evidenceSourceKey && evidenceSourceKey !== activeSource.key) {
+        onSelect(evidenceSourceKey);
+        return;
+      }
+      setPageNumber(next.pageNumber);
+    },
+    [activeSource, onSelect, pageNumber, scroll, setScroll, sources]
+  );
+  useLayoutEffect(() => {
+    if (!activeSource || renderedSourceIdentityRef.current === activeSourceIdentity) {
+      return;
+    }
+    renderedSourceIdentityRef.current = activeSourceIdentity;
+    setPageNumber(initialView?.pageNumber ?? activeSource.pageNumber ?? 1);
+    setZoom(initialView?.zoom ?? 1);
+    setFitMode(resolveInlineSourceFitMode(initialView?.fitMode));
+    setScroll({
+      left: initialView?.scrollLeft ?? 0,
+      top: initialView?.scrollTop ?? 0
+    });
+    setRenderStatus("loading");
+    setRenderError("");
+    setEvidencePresentation("LOADING");
+  }, [
+    activeSource,
+    activeSourceIdentity,
+    initialView?.fitMode,
+    initialView?.pageNumber,
+    initialView?.scrollLeft,
+    initialView?.scrollTop,
+    initialView?.zoom,
+    setScroll
+  ]);
   useEffect(() => {
     onViewChange?.({
       pageNumber,
@@ -385,6 +734,7 @@ export function InlineSourceViewer({
   }, [fitMode, onViewChange, pageNumber, scroll.left, scroll.top, zoom]);
 
   const updateStatus = useCallback((status: RenderStatus, message = "") => {
+    if (status === "ready") setHasRendered(true);
     setRenderStatus(status);
     setRenderError(message);
   }, []);
@@ -403,23 +753,41 @@ export function InlineSourceViewer({
       className="lv-inline-source"
       data-inline-source
       data-source-key={activeSource.key}
+      data-extraction-source={ocrLabel ? "ocr" : "native"}
+      data-source-fit-mode={fitMode.toLocaleLowerCase("de")}
+      data-evidence-presentation={evidencePresentation.toLocaleLowerCase("de")}
     >
       <header>
         <div>
+          <label className="lv-source-select">
+            <span className="sr-only">Dokumentquelle</span>
+            <select aria-label="Dokumentquelle" value={activeKey} onChange={(event) => onSelect(event.target.value)}>
+              {sources.map((source) => <option key={source.key} value={source.key}>{source.kind === "basis" ? "Basis-LV" : source.supplier ?? "Angebot"} · {source.articleNumber ?? source.title} · S. {source.pageNumber}</option>)}
+            </select>
+          </label>
           <strong>
             {activeSource.kind === "basis"
               ? "Basis-LV"
               : `Angebot: ${activeSource.supplier ?? "Lieferant"}${
-                  activeSource.articleNumber
-                    ? ` · Art. ${activeSource.articleNumber}`
-                    : ""
+                  activeSource.articleNumber ? ` · Art. ${activeSource.articleNumber}` : ""
                 }`}
           </strong>
           <span>
             Seite {pageNumber} von {activeSource.pageCount}
           </span>
+          {ocrLabel ? (
+            <span
+              className="source-ocr-badge"
+              data-ocr-source
+              title="Diese Fundstelle wurde aus dem Seitenbild gelesen."
+            >
+              {ocrLabel}
+            </span>
+          ) : null}
         </div>
         <nav>
+          <button aria-pressed={fitMode === "EVIDENCE"} onClick={() => { setFitMode("EVIDENCE"); setZoom(1); setScroll({ left: 0, top: 0 }); }}>Position</button>
+          <button aria-pressed={fitMode === "PAGE"} onClick={() => { setFitMode("PAGE"); setZoom(1); setScroll({ left: 0, top: 0 }); }}>Ganze Seite</button>
           <button
             onClick={() => {
               setFitMode("CUSTOM");
@@ -453,11 +821,13 @@ export function InlineSourceViewer({
               setZoom(1);
               setScroll({ left: 0, top: 0 });
             }}
+            aria-label="Dokument an Breite anpassen"
+            aria-pressed={fitMode === "WIDTH"}
           >
             An Breite anpassen
           </button>
           <button
-            onClick={() => setPageNumber((value) => Math.max(1, value - 1))}
+            onClick={() => changePage(pageNumber - 1)}
             disabled={pageNumber <= 1}
             aria-label="Vorherige Seite"
           >
@@ -480,11 +850,7 @@ export function InlineSourceViewer({
             <ChevronRight size={14} />
           </button>
           <button
-            onClick={() =>
-              setPageNumber((value) =>
-                Math.min(activeSource.pageCount, value + 1)
-              )
-            }
+            onClick={() => changePage(pageNumber + 1)}
             disabled={pageNumber >= activeSource.pageCount}
             aria-label="Nächste Seite"
           >
@@ -497,19 +863,20 @@ export function InlineSourceViewer({
       </header>
       <div className="lv-inline-source-stage">
         <PdfCanvas
-          key={`${activeSource.key}:${pageNumber}`}
           source={activeSource}
           pageNumber={pageNumber}
           zoom={zoom}
           fitMode={fitMode}
           showHighlight={renderStatus === "ready"}
+          renderStatus={renderStatus}
           onStatus={updateStatus}
+          onEvidencePresentation={setEvidencePresentation}
           onPageRendered={ignoreDimensions}
           initialScroll={scroll}
-          onScrollChange={setScroll}
+          onScrollChange={updateScroll}
         />
         {renderStatus === "loading" ? (
-          <div className="source-render-state">
+          <div className={`source-render-state ${hasRendered ? "source-render-refresh" : ""}`}>
             Dokumentseite wird geladen...
           </div>
         ) : null}
@@ -520,17 +887,30 @@ export function InlineSourceViewer({
           </div>
         ) : null}
       </div>
-      <footer>
-        {activeSource.evidence.some(
-          (item) => item.region.width > 0 && item.region.height > 0
-        ) ? (
+      <footer
+        className={`source-evidence-status state-${evidencePresentation.toLocaleLowerCase("de")}`}
+        data-evidence-presentation={evidencePresentation.toLocaleLowerCase("de")}
+      >
+        {evidencePresentation === "VISIBLE_VERIFIED" ? (
           <>
             <Info size={15} />
-            Die markierte Position im Originaldokument entspricht der
-            ausgewählten Position im Angebot.
+            Die Fundstelle der gewählten Position ist im Originaldokument markiert.
           </>
+        ) : evidencePresentation === "VISIBLE_UNCONFIRMED" ? (
+          <>
+            <AlertTriangle size={15} />
+            {ocrLabel
+              ? "Per OCR gelesen; Text, Fundstelle und Zuordnung manuell prüfen."
+              : "Markierung automatisch ermittelt; Fundstelle und Zuordnung prüfen."}
+          </>
+        ) : evidencePresentation === "LOADING" ? (
+          "Fundstelle wird geladen..."
+        ) : evidencePresentation === "OFF_PAGE" ? (
+          "Auf dieser Seite ist keine aktive Markierung sichtbar."
+        ) : evidencePresentation === "ERROR" ? (
+          "Fundstelle konnte nicht angezeigt werden."
         ) : (
-          "Dokumentkontext verfügbar; genaue Markierung fehlt."
+          "Dokumentkontext verfügbar; genaue Fundstelle muss geprüft werden."
         )}
       </footer>
     </section>
@@ -553,16 +933,14 @@ export function SourceOverlay({
   onClose: () => void;
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
-  const activeSource =
-    sources.find((source) => source.key === activeKey) ?? sources[0];
+  const activeSource = sources.find((source) => source.key === activeKey) ?? sources[0];
+  const ocrLabel = activeSource ? sourceOcrLabel(activeSource) : null;
   const [pageNumber, setPageNumber] = useState(
     initialView?.pageNumber ?? activeSource?.pageNumber ?? 1
   );
   const [zoom, setZoom] = useState(initialView?.zoom ?? 1);
-  const [fitMode, setFitMode] = useState<FitMode>(
-    initialView?.fitMode ?? "CONTEXT"
-  );
-  const [scroll, setScroll] = useState({
+  const [fitMode, setFitMode] = useState<FitMode>(initialView?.fitMode ?? "CONTEXT");
+  const [scroll, setScroll, updateScroll] = useDeferredScrollPosition({
     left: initialView?.scrollLeft ?? 0,
     top: initialView?.scrollTop ?? 0
   });
@@ -570,6 +948,8 @@ export function SourceOverlay({
   const [showDetails, setShowDetails] = useState(true);
   const [renderStatus, setRenderStatus] = useState<RenderStatus>("loading");
   const [renderError, setRenderError] = useState("");
+  const [evidencePresentation, setEvidencePresentation] =
+    useState<PdfEvidencePresentationState>("LOADING");
   const [renderKey, setRenderKey] = useState(0);
   const [canvasDimensions, setCanvasDimensions] = useState({ width: 0, height: 0 });
 
@@ -623,8 +1003,7 @@ export function SourceOverlay({
     setRenderError(message);
   }, []);
   const updateDimensions = useCallback(
-    (dimensions: { width: number; height: number }) =>
-      setCanvasDimensions(dimensions),
+    (dimensions: { width: number; height: number }) => setCanvasDimensions(dimensions),
     []
   );
 
@@ -632,13 +1011,10 @@ export function SourceOverlay({
     () => Array.from(new Set(sources.map((source) => source.tabLabel))),
     [sources]
   );
-  const activeTabSources = sources.filter(
-    (source) => source.tabLabel === activeSource?.tabLabel
-  );
+  const activeTabSources = sources.filter((source) => source.tabLabel === activeSource?.tabLabel);
   const sidebarSources = activeTabSources.filter(
     (source, index, all) =>
-      !source.lineId ||
-      all.findIndex((candidate) => candidate.lineId === source.lineId) === index
+      !source.lineId || all.findIndex((candidate) => candidate.lineId === source.lineId) === index
   );
   const offerSources = sources.filter(
     (source, index, all) =>
@@ -646,8 +1022,7 @@ export function SourceOverlay({
       Boolean(source.supplierOptionId) &&
       all.findIndex(
         (candidate) =>
-          candidate.kind === "supplier" &&
-          candidate.supplierOptionId === source.supplierOptionId
+          candidate.kind === "supplier" && candidate.supplierOptionId === source.supplierOptionId
       ) === index
   );
   const activeOfferIndex = offerSources.findIndex(
@@ -660,8 +1035,18 @@ export function SourceOverlay({
       source.lineId === activeSource?.lineId &&
       source.pageNumber !== activeSource?.pageNumber
   );
-  const exactRegionAvailable = activeSource?.evidence.some(
-    (evidence) => evidence.region.width > 0 && evidence.region.height > 0
+  const changePage = useCallback(
+    (requestedPage: number) => {
+      const next = resolveSourcePageChange({
+        currentPage: pageNumber,
+        requestedPage,
+        pageCount: activeSource?.pageCount ?? 1,
+        scroll
+      });
+      setScroll(next.scroll);
+      setPageNumber(next.pageNumber);
+    },
+    [activeSource?.pageCount, pageNumber, scroll, setScroll]
   );
   if (!activeSource) return null;
 
@@ -675,7 +1060,9 @@ export function SourceOverlay({
         tabIndex={-1}
         ref={dialogRef}
         data-source-overlay
+        data-extraction-source={ocrLabel ? "ocr" : "native"}
         data-source-fit-mode={fitMode.toLocaleLowerCase("de")}
+        data-evidence-presentation={evidencePresentation.toLocaleLowerCase("de")}
       >
         <header className="source-overlay-header">
           <div>
@@ -691,9 +1078,13 @@ export function SourceOverlay({
               )}
             </strong>
             <span>
-              {activeSource.positionNumber} · Seite {pageNumber} von{" "}
-              {activeSource.pageCount}
+              {activeSource.positionNumber} · Seite {pageNumber} von {activeSource.pageCount}
             </span>
+            {ocrLabel ? (
+              <span className="source-ocr-badge" data-ocr-source>
+                {ocrLabel}
+              </span>
+            ) : null}
           </div>
           <nav className="source-tabs" aria-label="Quellen">
             {sourceTabs.map((tab) => {
@@ -709,11 +1100,7 @@ export function SourceOverlay({
               );
             })}
           </nav>
-          <button
-            className="source-close"
-            onClick={onClose}
-            aria-label="Quelle schließen"
-          >
+          <button className="source-close" onClick={onClose} aria-label="Quelle schließen">
             <X size={20} />
           </button>
         </header>
@@ -721,27 +1108,39 @@ export function SourceOverlay({
         <div className="source-overlay-toolbar">
           <button
             className={fitMode === "CONTEXT" ? "active" : ""}
-            onClick={() => { setFitMode("CONTEXT"); setZoom(1); }}
+            onClick={() => {
+              setFitMode("CONTEXT");
+              setZoom(1);
+            }}
             aria-pressed={fitMode === "CONTEXT"}
           >
             Kontext
           </button>
           <button
             className={fitMode === "EVIDENCE" ? "active" : ""}
-            onClick={() => { setFitMode("EVIDENCE"); setZoom(1); }}
+            onClick={() => {
+              setFitMode("EVIDENCE");
+              setZoom(1);
+            }}
             aria-pressed={fitMode === "EVIDENCE"}
           >
             Markierung
           </button>
           <button
             className={fitMode === "PAGE" ? "active" : ""}
-            onClick={() => { setFitMode("PAGE"); setZoom(1); }}
+            onClick={() => {
+              setFitMode("PAGE");
+              setZoom(1);
+            }}
           >
             Seite anpassen
           </button>
           <button
             className={fitMode === "WIDTH" ? "active" : ""}
-            onClick={() => { setFitMode("WIDTH"); setZoom(1); }}
+            onClick={() => {
+              setFitMode("WIDTH");
+              setZoom(1);
+            }}
           >
             Breite anpassen
           </button>
@@ -782,7 +1181,7 @@ export function SourceOverlay({
           </button>
           <i />
           <button
-            onClick={() => setPageNumber((value) => Math.max(1, value - 1))}
+            onClick={() => changePage(pageNumber - 1)}
             disabled={pageNumber <= 1}
             aria-label="Vorherige Seite"
           >
@@ -792,9 +1191,7 @@ export function SourceOverlay({
             Seite {pageNumber} von {activeSource.pageCount}
           </span>
           <button
-            onClick={() =>
-              setPageNumber((value) => Math.min(activeSource.pageCount, value + 1))
-            }
+            onClick={() => changePage(pageNumber + 1)}
             disabled={pageNumber >= activeSource.pageCount}
             aria-label="Nächste Seite"
           >
@@ -814,10 +1211,7 @@ export function SourceOverlay({
               Angebot {activeOfferIndex + 1} von {offerSources.length}
             </span>
             <button
-              disabled={
-                activeOfferIndex < 0 ||
-                activeOfferIndex >= offerSources.length - 1
-              }
+              disabled={activeOfferIndex < 0 || activeOfferIndex >= offerSources.length - 1}
               onClick={() => onSelect(offerSources[activeOfferIndex + 1].key)}
             >
               Nächstes Angebot
@@ -834,15 +1228,15 @@ export function SourceOverlay({
               zoom={zoom}
               fitMode={fitMode}
               showHighlight={showHighlight && renderStatus === "ready"}
+              renderStatus={renderStatus}
               onStatus={updateStatus}
+              onEvidencePresentation={setEvidencePresentation}
               onPageRendered={updateDimensions}
               initialScroll={scroll}
-              onScrollChange={setScroll}
+              onScrollChange={updateScroll}
             />
             {renderStatus === "loading" ? (
-              <div className="source-render-state">
-                Dokumentseite wird geladen...
-              </div>
+              <div className="source-render-state">Dokumentseite wird geladen...</div>
             ) : null}
             {renderStatus === "error" ? (
               <div className="source-render-state source-render-error" role="alert">
@@ -872,10 +1266,16 @@ export function SourceOverlay({
               </span>
               <h2>{activeSource.title}</h2>
               <p>{activeSource.description}</p>
-              {!exactRegionAvailable ? (
+              {evidencePresentation === "VISIBLE_UNCONFIRMED" ? (
                 <p className="source-context-only">
-                  Genaue Markierung nicht verfügbar
+                  {ocrLabel
+                    ? "Per OCR gelesen; Text und Fundstelle manuell prüfen"
+                    : "Markierung automatisch ermittelt; Fundstelle prüfen"}
                 </p>
+              ) : !showHighlight ? (
+                <p className="source-context-only">Markierung ist ausgeblendet</p>
+              ) : !["VISIBLE_VERIFIED", "LOADING"].includes(evidencePresentation) ? (
+                <p className="source-context-only">Genaue Markierung nicht verfügbar</p>
               ) : null}
               {activeSource.kind === "supplier" ? (
                 <dl className="source-active-summary">
@@ -894,8 +1294,7 @@ export function SourceOverlay({
                   <div>
                     <dt>Menge</dt>
                     <dd>
-                      {formatNumber(activeSource.quantity)}{" "}
-                      {activeSource.unit ?? ""}
+                      {formatNumber(activeSource.quantity)} {activeSource.unit ?? ""}
                     </dd>
                   </div>
                   <div>
@@ -938,8 +1337,7 @@ export function SourceOverlay({
                       <small>
                         {formatNumber(source.quantity)} {source.unit ?? ""} · EP{" "}
                         {formatCurrency(source.unitPrice ?? null)} · GP{" "}
-                        {formatCurrency(source.totalPrice ?? null)} · Seite{" "}
-                        {source.pageNumber}
+                        {formatCurrency(source.totalPrice ?? null)} · Seite {source.pageNumber}
                       </small>
                     </button>
                   ))}
@@ -951,36 +1349,53 @@ export function SourceOverlay({
                   <dd>{activeSource.documentLabel}</dd>
                 </div>
                 {activeSource.kind === "basis" && activeSource.offerNumber ? (
-                  <div><dt>Angebotsnummer</dt><dd>{activeSource.offerNumber}</dd></div>
+                  <div>
+                    <dt>Angebotsnummer</dt>
+                    <dd>{activeSource.offerNumber}</dd>
+                  </div>
                 ) : null}
                 {activeSource.date ? (
-                  <div><dt>Datum</dt><dd>{activeSource.date}</dd></div>
+                  <div>
+                    <dt>Datum</dt>
+                    <dd>{activeSource.date}</dd>
+                  </div>
                 ) : null}
                 {activeSource.revision ? (
-                  <div><dt>Revision</dt><dd>{activeSource.revision}</dd></div>
+                  <div>
+                    <dt>Revision</dt>
+                    <dd>{activeSource.revision}</dd>
+                  </div>
                 ) : null}
                 {activeSource.kind === "basis" ? (
                   <>
-                    <div><dt>Seite</dt><dd>{pageNumber}</dd></div>
+                    <div>
+                      <dt>Seite</dt>
+                      <dd>{pageNumber}</dd>
+                    </div>
                     <div>
                       <dt>Menge</dt>
-                      <dd>{formatNumber(activeSource.quantity)} {activeSource.unit ?? ""}</dd>
+                      <dd>
+                        {formatNumber(activeSource.quantity)} {activeSource.unit ?? ""}
+                      </dd>
                     </div>
                   </>
                 ) : null}
                 {activeSource.manufacturer ? (
-                  <div><dt>Hersteller</dt><dd>{activeSource.manufacturer}</dd></div>
+                  <div>
+                    <dt>Hersteller</dt>
+                    <dd>{activeSource.manufacturer}</dd>
+                  </div>
                 ) : null}
                 {activeSource.kind === "basis" && activeSource.articleNumber ? (
-                  <div><dt>Artikel</dt><dd>{activeSource.articleNumber}</dd></div>
+                  <div>
+                    <dt>Artikel</dt>
+                    <dd>{activeSource.articleNumber}</dd>
+                  </div>
                 ) : null}
               </dl>
 
               {continuation ? (
-                <button
-                  className="source-continuation"
-                  onClick={() => onSelect(continuation.key)}
-                >
+                <button className="source-continuation" onClick={() => onSelect(continuation.key)}>
                   Nächste Belegseite · Seite {continuation.pageNumber}
                 </button>
               ) : null}

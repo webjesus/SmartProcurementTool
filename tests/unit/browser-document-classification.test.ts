@@ -8,16 +8,9 @@ import {
   reconcileDocumentRelations,
   type BrowserPdfInspection
 } from "@/browser-projects/document-classification";
-import type {
-  BrowserDocumentRecord,
-  BrowserDocumentType
-} from "@/browser-projects/types";
+import type { BrowserDocumentRecord, BrowserDocumentType } from "@/browser-projects/types";
 
-function inspection(
-  text: string,
-  pageCount = 10,
-  pagesWithText = 3
-): BrowserPdfInspection {
+function inspection(text: string, pageCount = 10, pagesWithText = 3): BrowserPdfInspection {
   return {
     pageCount,
     metadata: {},
@@ -28,10 +21,8 @@ function inspection(
   };
 }
 
-const basisPrefix =
-  "Angebotsaufforderung LV-Daten LV-Bezeichnung LV-Nummer Inhaltsverzeichnis";
-const positionStructure =
-  "1.1.10. Wärmepumpe Menge 6 St 1.1.20. Zubehör Menge 1 St";
+const basisPrefix = "Angebotsaufforderung LV-Daten LV-Bezeichnung LV-Nummer Inhaltsverzeichnis";
+const positionStructure = "1.1.10. Wärmepumpe Menge 6 St 1.1.20. Zubehör Menge 1 St";
 
 const corpus = [
   {
@@ -144,17 +135,10 @@ const corpus = [
   }
 ] as const;
 
-function record(
-  index: number,
-  input: (typeof corpus)[number]
-): BrowserDocumentRecord {
+function record(index: number, input: (typeof corpus)[number]): BrowserDocumentRecord {
   const classified = classifyBrowserDocumentContent({
     fileName: input.name,
-    inspection: inspection(
-      input.text,
-      input.pages,
-      input.text ? 3 : 0
-    )
+    inspection: inspection(input.text, input.pages, input.text ? 3 : 0)
   });
   return {
     projectId: "project",
@@ -188,31 +172,106 @@ function record(
     manualBasisOverrideConfirmed: false,
     classificationConfidence: classified.confidence,
     classificationWarnings: classified.warnings,
-    processingStatus:
-      classified.scanState === "OCR_REQUIRED"
-        ? "PRÜFUNG_ERFORDERLICH"
-        : "BEREIT"
+    processingStatus: classified.scanState === "OCR_REQUIRED" ? "PRÜFUNG_ERFORDERLICH" : "BEREIT"
   };
 }
 
 describe("content-first browser document classification", () => {
-  it.each(corpus)(
-    "classifies $name from corpus-derived content",
-    (fixture) => {
-      const result = classifyBrowserDocumentContent({
-        fileName: fixture.name,
-        inspection: inspection(
-          fixture.text,
-          fixture.pages,
-          fixture.text ? 3 : 0
-        )
-      });
-      expect(result.documentType).toBe(fixture.role);
-      expect(result.discipline).toBe(fixture.discipline);
-      expect(result.offerNumber).toBe(fixture.offerNumber);
-      expect(result.documentVersion).toBe(fixture.version);
-    }
-  );
+  it.each(corpus)("classifies $name from corpus-derived content", (fixture) => {
+    const result = classifyBrowserDocumentContent({
+      fileName: fixture.name,
+      inspection: inspection(fixture.text, fixture.pages, fixture.text ? 3 : 0)
+    });
+    expect(result.documentType).toBe(fixture.role);
+    expect(result.discipline).toBe(fixture.discipline);
+    expect(result.offerNumber).toBe(fixture.offerNumber);
+    expect(result.documentVersion).toBe(fixture.version);
+  });
+
+  it("classifies a textless scan from local OCR but keeps the result review-only", () => {
+    const result = classifyBrowserDocumentContent({
+      fileName: "scan.pdf",
+      inspection: {
+        ...inspection("", 2, 0),
+        ocrText:
+          "Weishaupt Angebot Nr. 22505626 E-Preis Gesamtpreis LV.Pos. Heizungsinstallation Wärmepumpe 1.1.160",
+        ocrPageCount: 1,
+        ocrMeanConfidence: 94
+      }
+    });
+
+    expect(result.documentType).toBe("SUPPLIER_OFFER");
+    expect(result.discipline).toBe("HEIZUNG");
+    expect(result.scanState).toBe("OCR_AVAILABLE");
+    expect(result.confidence).toBe("MEDIUM");
+    expect(result.warnings).toContain(
+      "Lokales OCR verwendet. Dokumentrolle und Fundstellen müssen geprüft werden."
+    );
+  });
+
+  it("counts hyphenated LV references and supplier-only position labels in the preliminary inventory", () => {
+    const linked = classifyBrowserDocumentContent({
+      fileName: "lieferant-a.pdf",
+      inspection: inspection(
+        "Angebot Nr. 12345 E-Preis Gesamtpreis " +
+          "zu LV-Pos.: 1.1.10 Pumpe 2 St " +
+          "zu LV-Position 1 . 1 . 20 Ventil 3 St"
+      )
+    });
+    const supplierOnly = classifyBrowserDocumentContent({
+      fileName: "lieferant-b.pdf",
+      inspection: inspection(
+        "Angebot Nr. 54321 E-Preis Gesamtpreis " +
+          "Angebotsposition 70 Pumpe 2 St " +
+          "Angebotsposition 80 Ventil 3 St"
+      )
+    });
+
+    expect(linked.preliminaryPositionCount).toBe(2);
+    expect(supplierOnly.preliminaryPositionCount).toBe(2);
+  });
+
+  it("recognizes a supplier returning a completed LV even when appended pages retain tender headings", () => {
+    const result = classifyBrowserDocumentContent({
+      fileName: "scan.pdf",
+      inspection: {
+        ...inspection("", 3, 0),
+        ocrText:
+          "In der Anlage erhalten Sie das ausgefüllte Leistungsverzeichnis zurück. " +
+          "Preisbindung: drei Monate. Wir hoffen, dass Ihnen unser Angebot zusagt. " +
+          `${basisPrefix} Heizungsinstallation ${positionStructure}`,
+        ocrPageCount: 3,
+        ocrMeanConfidence: 86
+      }
+    });
+    expect(result.documentType).toBe("SUPPLIER_OFFER");
+    expect(result.confidence).toBe("MEDIUM");
+    expect(result.preliminaryPositionCount).toBe(2);
+    expect(result.warnings).toContain("Lieferant konnte nicht sicher erkannt werden.");
+  });
+
+  it("does not confuse the request to return a completed LV with a supplier response", () => {
+    const result = classifyBrowserDocumentContent({
+      fileName: "tender.pdf",
+      inspection: inspection(
+        "Bitte senden Sie das ausgefüllte Leistungsverzeichnis zurück. Preisbindung: drei Monate. " +
+          `${basisPrefix} Heizungsinstallation ${positionStructure}`
+      )
+    });
+    expect(result.documentType).toBe("BASIS_LV");
+  });
+
+  it("does not turn a priced offer into a document-level no-bid because one row was not offered", () => {
+    const result = classifyBrowserDocumentContent({
+      fileName: "offer.pdf",
+      inspection: inspection(
+        "Angebot Nr. 123456789 Einzelpreis Gesamtpreis " +
+          "zu LV-Pos.: 1.1.10 nicht angeboten " +
+          "zu LV-Pos.: 1.1.20 Pumpe 2 St 10,00 20,00"
+      )
+    });
+    expect(result.documentType).toBe("SUPPLIER_OFFER");
+  });
 
   it("does not confuse P&M Version 2 or offer suffixes with revisions", () => {
     const documents = reconcileDocumentRelations(
@@ -243,10 +302,9 @@ describe("content-first browser document classification", () => {
       corpus.map((fixture, index) => record(index, fixture))
     );
     expect(
-      selected.filter((document) => document.activeBasis).map((document) => [
-        document.documentType,
-        document.discipline
-      ])
+      selected
+        .filter((document) => document.activeBasis)
+        .map((document) => [document.documentType, document.discipline])
     ).toEqual([
       ["BASIS_LV", "HEIZUNG"],
       ["BASIS_LV", "SANITAER"]
@@ -263,8 +321,7 @@ describe("content-first browser document classification", () => {
       corpus.map((fixture, index) => record(index, fixture))
     );
     const documents = classifiedDocuments.map((document) =>
-      document.documentId === "document-2" ||
-      document.documentId === "document-3"
+      document.documentId === "document-2" || document.documentId === "document-3"
         ? {
             ...document,
             projectName: "28465 Layher D8 Grabenstraße Markgröningen",
@@ -278,16 +335,10 @@ describe("content-first browser document classification", () => {
           : document
     );
     const clusters = buildDocumentClusters(documents);
-    expect(
-      clusters.filter((cluster) => cluster.discipline === "HEIZUNG")
-    ).toHaveLength(1);
-    expect(
-      clusters.filter((cluster) => cluster.discipline === "SANITAER")
-    ).toHaveLength(1);
+    expect(clusters.filter((cluster) => cluster.discipline === "HEIZUNG")).toHaveLength(1);
+    expect(clusters.filter((cluster) => cluster.discipline === "SANITAER")).toHaveLength(1);
     const heating = clusters.find((cluster) => cluster.discipline === "HEIZUNG");
-    const sanitary = clusters.find(
-      (cluster) => cluster.discipline === "SANITAER"
-    );
+    const sanitary = clusters.find((cluster) => cluster.discipline === "SANITAER");
     expect(heating?.basisDocumentIds).toEqual(["document-0"]);
     expect(heating?.supplierDocumentIds).toHaveLength(4);
     expect(sanitary?.basisDocumentIds).toEqual(["document-1"]);
@@ -309,9 +360,7 @@ describe("content-first browser document classification", () => {
   it("recognizes an explicit no-bid only from explicit source language", () => {
     const result = classifyBrowserDocumentContent({
       fileName: "Absage.pdf",
-      inspection: inspection(
-        "Gienger Angebotsnummer 15889095-001 Wir sehen von einem Angebot ab."
-      )
+      inspection: inspection("Gienger Angebotsnummer 15889095-001 Wir sehen von einem Angebot ab.")
     });
     expect(result.documentType).toBe("EXPLICIT_NO_BID");
   });

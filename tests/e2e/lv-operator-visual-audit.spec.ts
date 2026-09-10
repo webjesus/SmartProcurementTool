@@ -3,28 +3,7 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 const realPilot = process.env.SPT_REAL_PILOT === "true";
 
 async function authenticateAndOpen(page: Page) {
-  await page.goto("/", { waitUntil: "domcontentloaded" });
-  await page.waitForFunction(
-    () =>
-      Boolean(
-        document.querySelector(".decision-login") ||
-          document.querySelector("[data-session-login]") ||
-          document.querySelector(".project-card")
-      )
-  );
-  const login = page.locator(".decision-login, [data-session-login]").first();
-  if (await login.isVisible()) {
-    await login.getByLabel("Anzeigename").fill("LV Reference Audit");
-    await login.getByRole("button", { name: "Weiter" }).click();
-  }
-  await expect(page.locator(".project-card").first()).toBeVisible({
-    timeout: 30_000
-  });
-  await page
-    .locator(".project-card")
-    .first()
-    .getByRole("link", { name: "Öffnen" })
-    .click();
+  await page.goto("/lv-vergleich", { waitUntil: "domcontentloaded" });
   await expect(page.locator("[data-real-lv-workspace]")).toBeVisible({
     timeout: 90_000
   });
@@ -163,9 +142,10 @@ test.describe("approved two-pane LV reference audit", () => {
       .toBeGreaterThanOrEqual(12);
     expect((paneBox?.x ?? 0) - ((listBox?.x ?? 0) + (listBox?.width ?? 0)))
       .toBeLessThanOrEqual(16);
-    const paneRatio = (paneBox?.width ?? 0) / 1920;
-    expect(paneRatio).toBeGreaterThanOrEqual(0.22);
-    expect(paneRatio).toBeLessThanOrEqual(0.33);
+    const workspaceBox = await page.locator("[data-lv-two-pane]").boundingBox();
+    const paneRatio = (paneBox?.width ?? 0) / (workspaceBox?.width ?? 1);
+    expect(paneRatio).toBeGreaterThanOrEqual(0.38);
+    expect(paneRatio).toBeLessThanOrEqual(0.4);
     await page.screenshot({
       path: testInfo.outputPath("04-information-tab.png")
     });

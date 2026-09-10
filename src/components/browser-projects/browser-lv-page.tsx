@@ -1,13 +1,17 @@
 "use client";
 
-import { ArrowLeft, FilePlus2 } from "lucide-react";
-import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { CentralSupplierDecision } from "@/domain/central-decision";
-import type { ProjectWorkspaceState } from "@/domain/project-workspace";
+import {
+  ProjectWorkspaceStateSchema,
+  type ProjectWorkspaceState
+} from "@/domain/project-workspace";
 import { LvComparisonPage } from "@/components/lv/lv-comparison-page";
-import { getBrowserProjectService } from "@/browser-projects/project-service";
+import {
+  getBrowserProjectService,
+  type BrowserManualCorrectionInput
+} from "@/browser-projects/project-service";
 import {
   exportBrowserProjectExcel,
   exportBrowserProjectPdf
@@ -17,9 +21,49 @@ import type {
   BrowserProjectRecord,
   BrowserSelectionRecord
 } from "@/browser-projects/types";
+import type { BrowserManualCorrectionCommand } from "@/browser-projects/manual-corrections";
 import { AddFilesDialog } from "@/components/browser-projects/add-files-dialog";
+import { useDecisionIdentity } from "@/components/decision-identity";
+import { ThemeControl } from "@/components/theme-control";
 
 const BROWSER_OPERATOR_ID = "00000000-0000-4000-8000-000000000001";
+
+export function normalizeBrowserWorkspaceState(value: unknown): ProjectWorkspaceState {
+  return ProjectWorkspaceStateSchema.parse(value);
+}
+
+export function stageBrowserWorkspace(
+  ref: { current: ProjectWorkspaceState | null },
+  state: ProjectWorkspaceState
+): void {
+  ref.current = state;
+}
+
+export async function persistLatestWorkspaceBeforeNavigation(
+  ref: { current: ProjectWorkspaceState | null },
+  save: (state: ProjectWorkspaceState) => Promise<void>
+): Promise<void> {
+  if (ref.current) await save(ref.current);
+}
+
+export function buildBrowserManualCorrectionInput(input: {
+  projectId: string;
+  analysisVersionId: string;
+  manualCorrectionRevision?: number;
+  command: BrowserManualCorrectionCommand;
+  operatorId: string;
+  operatorLabel: string;
+}): BrowserManualCorrectionInput {
+  return {
+    projectId: input.projectId,
+    analysisVersionId: input.analysisVersionId,
+    expectedRevision: input.manualCorrectionRevision ?? 0,
+    command: input.command,
+    operatorId: input.operatorId,
+    operatorLabel: input.operatorLabel,
+    comment: "Manuelle Korrektur im LV-Inspector"
+  };
+}
 
 function asCentralDecision(
   projectId: string,
@@ -53,6 +97,7 @@ function asCentralDecision(
 export function BrowserLvPage({ projectId }: { projectId: string }) {
   const service = useMemo(() => getBrowserProjectService(), []);
   const router = useRouter();
+  const identity = useDecisionIdentity();
   const [project, setProject] = useState<BrowserProjectRecord | null>(null);
   const [analysis, setAnalysis] = useState<BrowserAnalysisSnapshot | null>(null);
   const [selections, setSelections] = useState<BrowserSelectionRecord[]>([]);
@@ -60,18 +105,24 @@ export function BrowserLvPage({ projectId }: { projectId: string }) {
   const [error, setError] = useState("");
   const [addFilesOpen, setAddFilesOpen] = useState(false);
   const [leaving, setLeaving] = useState(false);
-  const [latestWorkspace, setLatestWorkspace] =
-    useState<ProjectWorkspaceState | null>(null);
+  const [latestWorkspaceBuffer] = useState<{
+    current: ProjectWorkspaceState | null;
+  }>(() => ({ current: null }));
   const documentUrlsRef = useRef<Record<string, string>>({});
+  const initials =
+    identity.user?.displayName
+      .split(/\s+/u)
+      .slice(0, 2)
+      .map((part) => part[0]?.toLocaleUpperCase("de"))
+      .join("") || "WB";
 
   const reload = useCallback(async () => {
-    const [storedProject, snapshot, storedSelections, documents] =
-      await Promise.all([
-        service.getProject(projectId),
-        service.latestAnalysis(projectId),
-        service.listSelections(projectId),
-        service.listDocuments(projectId)
-      ]);
+    const [storedProject, snapshot, storedSelections, documents] = await Promise.all([
+      service.getProject(projectId),
+      service.latestAnalysis(projectId),
+      service.listSelections(projectId),
+      service.listDocuments(projectId)
+    ]);
     setProject(storedProject);
     setAnalysis(snapshot);
     setSelections(storedSelections);
@@ -105,9 +156,7 @@ export function BrowserLvPage({ projectId }: { projectId: string }) {
     }, 0);
     return () => {
       window.clearTimeout(timeout);
-      Object.values(documentUrlsRef.current).forEach((url) =>
-        URL.revokeObjectURL(url)
-      );
+      Object.values(documentUrlsRef.current).forEach((url) => URL.revokeObjectURL(url));
       documentUrlsRef.current = {};
     };
   }, [reload]);
@@ -132,31 +181,32 @@ export function BrowserLvPage({ projectId }: { projectId: string }) {
 
   const loadWorkspace = useCallback(async () => {
     const workspace = await service.getWorkspace(projectId);
-    const state =
-      (workspace?.state as ProjectWorkspaceState | undefined) ?? null;
-    setLatestWorkspace(state);
+    const state = workspace ? normalizeBrowserWorkspaceState(workspace.state) : null;
+    if (state) stageBrowserWorkspace(latestWorkspaceBuffer, state);
     return state;
-  }, [projectId, service]);
+  }, [latestWorkspaceBuffer, projectId, service]);
+
+  const stageWorkspace = useCallback(
+    (state: ProjectWorkspaceState) => {
+      stageBrowserWorkspace(latestWorkspaceBuffer, state);
+    },
+    [latestWorkspaceBuffer]
+  );
 
   const saveWorkspace = useCallback(
     async (state: ProjectWorkspaceState) => {
-      setLatestWorkspace(state);
+      stageBrowserWorkspace(latestWorkspaceBuffer, state);
       await service.saveWorkspace({
         projectId,
         state,
         updatedAt: new Date().toISOString()
       });
     },
-    [projectId, service]
+    [latestWorkspaceBuffer, projectId, service]
   );
 
   const selectSupplierOption = useCallback(
-    async (input: {
-      positionId: string;
-      optionId: string;
-      lineIds: string[];
-      comment: string;
-    }) => {
+    async (input: { positionId: string; optionId: string; lineIds: string[]; comment: string }) => {
       await service.saveSelection({
         projectId,
         positionId: input.positionId,
@@ -170,27 +220,95 @@ export function BrowserLvPage({ projectId }: { projectId: string }) {
     [projectId, service]
   );
 
-  const leaveForProjects = useCallback(async () => {
-    if (leaving) return;
-    setLeaving(true);
-    try {
-      if (latestWorkspace) {
-        await saveWorkspace(latestWorkspace);
-      }
-      await service.updateProject(projectId, {
-        lastRoute: "LV_COMPARISON",
-        lastOpenedAt: new Date().toISOString()
+  const reviewMatch = useCallback(
+    async (input: {
+      positionId: string;
+      matchLinkId: string;
+      decision: "CONFIRMED" | "REJECTED";
+    }) => {
+      if (!analysis) throw new Error("MATCH_REVIEW_ANALYSIS_REQUIRED");
+      await service.reviewMatch({
+        projectId,
+        analysisVersionId: analysis.analysisVersionId,
+        matchLinkId: input.matchLinkId,
+        positionId: input.positionId,
+        decision: input.decision,
+        operator: "Lokaler Benutzer",
+        comment:
+          input.decision === "CONFIRMED"
+            ? "Zuordnung im LV-Inspector bestätigt"
+            : "Zuordnung im LV-Inspector abgelehnt",
+        updatedAt: new Date().toISOString()
       });
-      router.push("/projects");
-    } catch (navigationError) {
-      setError(
-        navigationError instanceof Error
-          ? navigationError.message
-          : "Der Arbeitsbereich konnte vor dem Verlassen nicht gespeichert werden."
-      );
-      setLeaving(false);
-    }
-  }, [latestWorkspace, leaving, projectId, router, saveWorkspace, service]);
+    },
+    [analysis, projectId, service]
+  );
+
+  const applyManualCorrection = useCallback(
+    async (command: BrowserManualCorrectionCommand) => {
+      if (!analysis) {
+        throw new Error("Für die Korrektur ist eine aktuelle Analyse erforderlich.");
+      }
+      try {
+        const updated = await service.applyManualCorrection(
+          buildBrowserManualCorrectionInput({
+            projectId,
+            analysisVersionId: analysis.analysisVersionId,
+            manualCorrectionRevision: analysis.manualCorrectionRevision,
+            command,
+            operatorId: identity.user?.id ?? BROWSER_OPERATOR_ID,
+            operatorLabel: identity.user?.displayName ?? "Lokaler Benutzer"
+          })
+        );
+        setAnalysis(updated);
+        setSelections([]);
+      } catch (correctionError) {
+        const code = correctionError instanceof Error ? correctionError.message : "";
+        if (
+          code === "MANUAL_CORRECTION_STALE_ANALYSIS" ||
+          code === "MANUAL_CORRECTION_REVISION_CONFLICT"
+        ) {
+          throw new Error(
+            "Die Analyse wurde zwischenzeitlich geändert. Bitte die Seite neu laden und die Korrektur erneut prüfen."
+          );
+        }
+        if (code === "MANUAL_CORRECTION_SOURCE_INVALID") {
+          throw new Error(
+            "Die angegebene Seite oder Markierung liegt außerhalb des Quelldokuments."
+          );
+        }
+        throw new Error(
+          code && !code.startsWith("MANUAL_CORRECTION_")
+            ? code
+            : "Die manuelle Korrektur konnte nicht gespeichert werden."
+        );
+      }
+    },
+    [analysis, identity.user, projectId, service]
+  );
+
+  const leaveForRoute = useCallback(
+    async (destination: string) => {
+      if (leaving) return;
+      setLeaving(true);
+      try {
+        await persistLatestWorkspaceBeforeNavigation(latestWorkspaceBuffer, saveWorkspace);
+        await service.updateProject(projectId, {
+          lastRoute: "LV_COMPARISON",
+          lastOpenedAt: new Date().toISOString()
+        });
+        router.push(destination);
+      } catch (navigationError) {
+        setError(
+          navigationError instanceof Error
+            ? navigationError.message
+            : "Der Arbeitsbereich konnte vor dem Verlassen nicht gespeichert werden."
+        );
+        setLeaving(false);
+      }
+    },
+    [latestWorkspaceBuffer, leaving, projectId, router, saveWorkspace, service]
+  );
 
   const adapter = useMemo(
     () =>
@@ -198,9 +316,14 @@ export function BrowserLvPage({ projectId }: { projectId: string }) {
         ? {
             decisions,
             documentUrls,
+            manualDisplayLabels: analysis.manualDisplayLabels,
             loadWorkspace,
+            stageWorkspace,
             saveWorkspace,
             selectSupplierOption,
+            matchReviews: analysis.matchReviews ?? [],
+            reviewMatch,
+            applyManualCorrection,
             exportExcel: () => {
               void exportBrowserProjectExcel({
                 projectName: project?.name ?? "Projekt",
@@ -218,11 +341,14 @@ export function BrowserLvPage({ projectId }: { projectId: string }) {
         : null,
     [
       analysis,
+      applyManualCorrection,
       decisions,
       documentUrls,
       loadWorkspace,
       project?.name,
       saveWorkspace,
+      stageWorkspace,
+      reviewMatch,
       selectSupplierOption,
       selections
     ]
@@ -237,24 +363,29 @@ export function BrowserLvPage({ projectId }: { projectId: string }) {
 
   return (
     <main className="browser-lv-project" data-browser-local-lv>
-      <nav className="browser-project-context">
-        <button
-          type="button"
-          data-back-to-projects
-          disabled={leaving}
-          onClick={() => void leaveForProjects()}
-        >
-          <ArrowLeft size={16} /> {leaving ? "Speichern …" : "Projekte"}
-        </button>
-        <strong>{project.name}</strong>
-        <Link href={`/projects/${projectId}/documents/review`}>Dokumente</Link>
-        <button onClick={() => setAddFilesOpen(true)}>
-          <FilePlus2 size={16} /> Dokumente hinzufügen
-        </button>
-      </nav>
       <LvComparisonPage
         pilot={analysis.pilot}
         reload={reload}
+        headerContext={{
+          name: project.name,
+          leaving,
+          onBack: () => void leaveForRoute("/projects"),
+          onDocuments: () => void leaveForRoute(`/projects/${projectId}/documents/review`),
+          onAddDocuments: () => setAddFilesOpen(true),
+          utilityActions: (
+            <>
+              <ThemeControl />
+              <button
+                type="button"
+                className="wb-avatar"
+                aria-label="Operatorprofil"
+                title={identity.user?.displayName ?? "Operatorprofil"}
+              >
+                {initials}
+              </button>
+            </>
+          )
+        }}
         browserLocal={adapter}
       />
       <AddFilesDialog

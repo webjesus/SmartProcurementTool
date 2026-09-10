@@ -1,6 +1,6 @@
 import type { PilotStateView } from "@/components/lv/types";
 
-export const BROWSER_PROJECT_SCHEMA_VERSION = 1;
+export const BROWSER_PROJECT_SCHEMA_VERSION = 2;
 
 export type BrowserProjectStatus =
   | "ENTWURF"
@@ -20,6 +20,9 @@ export type BrowserProjectRoute =
 export type BrowserProjectRecord = {
   projectId: string;
   name: string;
+  address: string;
+  engineeringOffice: string;
+  architectureOffice: string;
   objectDescription: string;
   illustrationId: string;
   createdAt: string;
@@ -37,6 +40,22 @@ export type BrowserProjectRecord = {
   processingFailureCode: "FAILED_NO_BASIS_POSITIONS" | "PROCESSING_ERROR" | null;
   activeDiscipline: BrowserDiscipline | null;
 };
+
+export function normalizeBrowserProjectRecord(
+  project: BrowserProjectRecord | (Omit<BrowserProjectRecord, "address" | "engineeringOffice" | "architectureOffice"> & {
+    address?: string;
+    engineeringOffice?: string;
+    architectureOffice?: string;
+  })
+): BrowserProjectRecord {
+  return {
+    ...project,
+    address: project.address?.trim() ?? "",
+    engineeringOffice: project.engineeringOffice?.trim() ?? "",
+    architectureOffice: project.architectureOffice?.trim() ?? "",
+    schemaVersion: BROWSER_PROJECT_SCHEMA_VERSION
+  };
+}
 
 export type BrowserDocumentType =
   | "BASIS_LV"
@@ -70,6 +89,7 @@ export type BrowserRelationType =
 export type BrowserScanState =
   | "TEXT_AVAILABLE"
   | "PARTIAL_TEXT"
+  | "OCR_AVAILABLE"
   | "OCR_REQUIRED";
 
 export type BrowserDocumentStatus =
@@ -117,6 +137,11 @@ export type BrowserDocumentRecord = {
   classificationDimensions: BrowserClassificationDimensions;
   classificationSignals: string[];
   textLayerCharacterCount: number;
+  ocrProcessedAt?: string | null;
+  ocrSampledPages?: number;
+  ocrMeanConfidence?: number | null;
+  ocrEngineVersion?: string | null;
+  ocrModelVersion?: string | null;
   preliminaryPositionCount: number;
   activeBasis: boolean;
   excludedFromProcessing: boolean;
@@ -170,6 +195,18 @@ export type BrowserAnalysisSnapshot = {
   projectId: string;
   analysisVersionId: string;
   createdAt: string;
+  /** Root machine-generated analysis kept immutable for manual correction replay. */
+  derivedFromAnalysisVersionId?: string | null;
+  manualCorrectionRevision?: number;
+  /** Selections from a superseded analysis, retained but never applied to a new extraction. */
+  archivedSelections?: BrowserSelectionRecord[];
+  manualCorrections?: import("@/browser-projects/manual-corrections").BrowserManualCorrectionRecord[];
+  manualDisplayLabels?: Record<string, string>;
+  manualEvidenceStatusByEntity?: Record<
+    string,
+    import("@/browser-projects/manual-corrections").ManualCorrectionEvidenceState
+  >;
+  matchReviews: BrowserMatchReviewRecord[];
   pilot: PilotStateView;
   summary: {
     basisPositions: number;
@@ -180,6 +217,9 @@ export type BrowserAnalysisSnapshot = {
     pagesInspected: number;
     pagesParsed: number;
     ocrRequiredPages: number;
+    ocrProcessedPages?: number;
+    ocrFailedPages?: number;
+    documentDiagnostics: import("@/browser-projects/processing-protocol").BrowserDocumentDiagnostics[];
   };
 };
 
@@ -188,6 +228,17 @@ export type BrowserSelectionRecord = {
   positionId: string;
   selectedSupplierOptionId: string;
   selectedLineIds: string[];
+  comment: string;
+  updatedAt: string;
+};
+
+export type BrowserMatchReviewRecord = {
+  projectId: string;
+  analysisVersionId: string;
+  matchLinkId: string;
+  positionId: string;
+  decision: "CONFIRMED" | "REJECTED";
+  operator: string;
   comment: string;
   updatedAt: string;
 };

@@ -174,7 +174,7 @@ function usePilotState() {
     const healthData = (await health.json()) as { mode?: string };
     if (healthData.mode !== "local-corpus") return null;
     const response = await fetch("/api/local/corpus?view=pilot", { cache: "no-store" });
-    if (!response.ok) throw new Error(`Pilot API returned ${response.status}.`);
+    if (!response.ok) throw new Error(`Quelldaten konnten nicht geladen werden (HTTP ${response.status}).`);
     return (await response.json()) as PilotStateView;
   }, []);
 
@@ -198,7 +198,7 @@ function usePilotState() {
           setError(
             loadError instanceof Error
               ? loadError.message
-              : "Pilotdaten konnten nicht geladen werden."
+              : "Quelldaten konnten nicht geladen werden."
           );
         }
       });
@@ -421,7 +421,7 @@ function FoundData() {
         description="Unveränderte Angebotsdaten vor LV-Zuordnung und kommerzieller Entscheidung."
         actions={
           <Button kind="secondary" disabled={isLocal}>
-            <Play size={16} /> {isLocal ? "Lokaler Pilot aktiv" : "Extraktion starten"}
+            <Play size={16} /> {isLocal ? "Lokale Extraktion" : "Extraktion starten"}
           </Button>
         }
       />
@@ -492,7 +492,7 @@ function FoundData() {
           </table>
         </div>
         {isLocal && visibleRealRows.length === 0 ? (
-          <div className="empty-state">Noch keine persistierten Supplier-Zeilen. Pilot-Extraction lokal ausführen.</div>
+          <div className="empty-state">Noch keine gespeicherten Angebotszeilen. Lokale Extraktion ausführen.</div>
         ) : null}
       </section>
     </>
@@ -574,7 +574,7 @@ function RealReview({
           description="Persistierte lokale Extraktion und Quellenbelege."
         />
         <section className="panel empty-state">
-          Keine offenen ReviewIssues im lokalen Pilotlauf.
+          Keine offenen Prüfpunkte im lokalen Verarbeitungslauf.
         </section>
       </>
     );
@@ -603,7 +603,7 @@ function RealReview({
         action,
         newValue,
         operator: "LOCAL_OPERATOR",
-        reason: "Quellenbasierte Pilotprüfung",
+        reason: "Quellenbasierte Prüfung",
         comment: message
       })
     });
@@ -634,7 +634,7 @@ function RealReview({
       <PageHeader
         eyebrow="PRÜFUNG"
         title="Quellenbasierte Prüfung"
-        description="Reale Pilotdaten, lokale Originalseite und dauerhaft gespeicherte Operatoraktionen."
+        description="Quelldaten, lokale Originalseite und gespeicherte Bearbeitungsschritte."
         actions={<span className="queue-counter">{queue.length} Hinweise</span>}
       />
       <div className="review-layout" data-pilot-review={selected.run.id}>
@@ -790,7 +790,7 @@ function Review() {
     return <section className="panel empty-state">{error}</section>;
   }
   if (pilot === undefined) {
-    return <section className="panel empty-state">Pilotdaten werden geladen…</section>;
+    return <section className="panel empty-state">Quelldaten werden geladen…</section>;
   }
   return pilot === null ? <SyntheticReview /> : <RealReview pilot={pilot} reload={reload} />;
 }
@@ -1157,7 +1157,7 @@ function RealMatching({
   if (!analysis) {
     return (
       <>
-        <PageHeader eyebrow="ZUORDNUNG" title="Reale Pilot-Zuordnung" description="Die begrenzte Matching-Analyse ist noch nicht verfügbar." />
+        <PageHeader eyebrow="ZUORDNUNG" title="Dokumentzuordnung" description="Die Zuordnungsanalyse ist noch nicht verfügbar." />
         <div className="notice"><CircleAlert size={19} /><div><strong>Analyse noch nicht erzeugt</strong><span>Die reale Extraktion ist vorhanden, aber der begrenzte Matching-Lauf fehlt.</span></div></div>
       </>
     );
@@ -1208,11 +1208,11 @@ function RealMatching({
   return (
     <>
       <PageHeader
-        eyebrow="ZUORDNUNG · REAL PILOT"
+        eyebrow="ZUORDNUNG"
         title="Angebote mit Basis-LV verbinden"
         description={`${analysis.basisPositionFrom}–${analysis.basisPositionTo}: Kandidaten aus unabhängigen Extraktionen, danach regelbasierte Constraints.`}
       />
-      <div className="notice"><Link2 size={19} /><div><strong>Extraktion bleibt unverändert</strong><span>Operatoraktionen erzeugen ReviewAction und AuditEvent in der lokalen Pilotdatei.</span></div></div>
+      <div className="notice"><Link2 size={19} /><div><strong>Extraktion bleibt unverändert</strong><span>Änderungen werden mit Prüfvermerk und Änderungsprotokoll lokal gespeichert.</span></div></div>
       <div className="matching-pilot-layout">
         <section className="panel">
           <div className="table-scroll">
@@ -1277,7 +1277,7 @@ function RealMatching({
 
 function Matching() {
   const { pilot, reload } = usePilotState();
-  if (pilot === undefined) return <div className="panel loading-panel">Pilotdaten werden geladen…</div>;
+  if (pilot === undefined) return <div className="panel loading-panel">Quelldaten werden geladen…</div>;
   return pilot === null ? <SyntheticMatching /> : <RealMatching pilot={pilot} reload={reload} />;
 }
 
@@ -1342,8 +1342,8 @@ function RealComparison({
   if (!analysis) {
     return (
       <>
-        <PageHeader eyebrow="LV-VERGLEICH" title="Realer Pilotvergleich" description="Die begrenzte Matching-Analyse ist noch nicht verfügbar." />
-        <div className="notice"><CircleAlert size={19} /><div><strong>Keine Pilotanalyse</strong><span>Matching muss zuerst lokal erzeugt werden.</span></div></div>
+        <PageHeader eyebrow="LV-VERGLEICH" title="Angebotsvergleich" description="Die Zuordnungsanalyse ist noch nicht verfügbar." />
+        <div className="notice"><CircleAlert size={19} /><div><strong>Analyse nicht verfügbar</strong><span>Die Zuordnung muss zuerst lokal verarbeitet werden.</span></div></div>
       </>
     );
   }
@@ -1509,7 +1509,7 @@ function RealComparison({
   return (
     <>
       <PageHeader
-        eyebrow="LV-VERGLEICH · REAL PILOT"
+        eyebrow="LV-VERGLEICH"
         title="Belastbarer Angebotsvergleich"
         description="Comparable totals enthalten nur belegte Primär- und Pflichtkomponenten; Optionalen und Alternativen bleiben separat."
       />
@@ -1837,7 +1837,7 @@ function RealComparison({
 
 function Comparison() {
   const { pilot, reload } = usePilotState();
-  if (pilot === undefined) return <div className="panel loading-panel">Pilotdaten werden geladen…</div>;
+  if (pilot === undefined) return <div className="panel loading-panel">Quelldaten werden geladen…</div>;
   return pilot === null ? (
     <SyntheticComparison />
   ) : process.env.NEXT_PUBLIC_LEGACY_LV_UI === "true" ? (
@@ -1980,7 +1980,7 @@ function RealDecisions({
   ]);
 
   if (!analysis) {
-    return <div className="notice">Keine reale Pilotanalyse vorhanden.</div>;
+    return <div className="notice">Noch keine Analyse vorhanden.</div>;
   }
 
   async function submitDecision(
@@ -2356,7 +2356,7 @@ function RealDecisions({
 
 function Decisions() {
   const { pilot, reload } = usePilotState();
-  if (pilot === undefined) return <div className="panel loading-panel">Pilotdaten werden geladen…</div>;
+  if (pilot === undefined) return <div className="panel loading-panel">Quelldaten werden geladen…</div>;
   return pilot === null ? <SyntheticDecisions /> : <RealDecisions pilot={pilot} reload={reload} />;
 }
 

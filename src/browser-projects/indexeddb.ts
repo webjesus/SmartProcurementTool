@@ -1,3 +1,4 @@
+import { normalizeBrowserProjectRecord } from "@/browser-projects/types";
 import type {
   BrowserAnalysisSnapshot,
   BrowserDocumentBlobRecord,
@@ -223,11 +224,17 @@ export class BrowserProjectDatabase {
 
 export class BrowserIndexedDbProjectRepository {
   constructor(private readonly database: BrowserProjectDatabase) {}
-  get(projectId: string) {
-    return this.database.get<BrowserProjectRecord>("projects", projectId);
+  async get(projectId: string) {
+    const project = await this.database.get<BrowserProjectRecord>(
+      "projects",
+      projectId
+    );
+    return project ? normalizeBrowserProjectRecord(project) : null;
   }
-  list() {
-    return this.database.getAll<BrowserProjectRecord>("projects");
+  async list() {
+    return (
+      await this.database.getAll<BrowserProjectRecord>("projects")
+    ).map(normalizeBrowserProjectRecord);
   }
   save(project: BrowserProjectRecord) {
     return this.database.put("projects", project);

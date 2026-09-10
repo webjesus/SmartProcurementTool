@@ -8,19 +8,12 @@ import {
   ProjectWorkspaceStateSchema,
   WorkspaceSourceStateSchema
 } from "@/domain/project-workspace";
-import {
-  cheapestFoundOption,
-  operatorSelectedOption
-} from "@/components/lv/lv-comparison-table";
-import {
-  LvPositionList,
-  derivePositionSelectionState
-} from "@/components/lv/lv-position-list";
-import {
-  WarningCenter,
-  buildLvWarnings
-} from "@/components/lv/warning-center";
+import { cheapestFoundOption, operatorSelectedOption } from "@/components/lv/lv-comparison-table";
+import { LvPositionList, derivePositionSelectionState } from "@/components/lv/lv-position-list";
+import { WarningCenter, buildLvWarnings } from "@/components/lv/warning-center";
 import { LvToolbar } from "@/components/lv/lv-toolbar";
+import { LvPageHeader } from "@/components/lv/lv-page-header";
+import { PositionDetailsPane } from "@/components/lv/position-details-pane";
 import { SourceOverlay } from "@/components/lv/source-overlay";
 import type { SourceRecord } from "@/components/lv/types";
 import {
@@ -80,9 +73,7 @@ function position(options: SupplierOption[]): ProjectReviewPosition {
   } as ProjectReviewPosition;
 }
 
-function decision(
-  selectedSupplierOptionId: string
-): CentralSupplierDecision {
+function decision(selectedSupplierOptionId: string): CentralSupplierDecision {
   return {
     id: "11111111-1111-4111-8111-111111111111",
     projectId: "project-fixture",
@@ -115,32 +106,33 @@ function tableMarkup(
   const reviewed = position(options);
   const lines = new Map<string, OfferLine>(
     options.flatMap((candidate) =>
-      candidate.matchedOfferLineIds.map((lineId) => [
-        lineId,
-        {
-          ...offerLine,
-          id: lineId,
-          manufacturer: candidate.supplierLabel,
-          interpretedUnitPrice: candidate.primaryPrice,
-          interpretedTotalPrice: candidate.pricedTotal,
-          evidence: [
+      candidate.matchedOfferLineIds.map(
+        (lineId) =>
+          [
+            lineId,
             {
-              ...evidence,
-              id: `evidence-${lineId}`,
-              documentId: candidate.supplierDocumentId
+              ...offerLine,
+              id: lineId,
+              manufacturer: candidate.supplierLabel,
+              interpretedUnitPrice: candidate.primaryPrice,
+              interpretedTotalPrice: candidate.pricedTotal,
+              evidence: [
+                {
+                  ...evidence,
+                  id: `evidence-${lineId}`,
+                  documentId: candidate.supplierDocumentId
+                }
+              ]
             }
-          ]
-        }
-      ] as const)
+          ] as const
+      )
     )
   );
   return renderToStaticMarkup(
     createElement(LvPositionList, {
       sections: [{ id: "section", title: "Section", positions: [reviewed] }],
       collapsed: new Set<string>(),
-      expandedPositionIds: expanded
-        ? new Set([basisPosition.id])
-        : new Set<string>(),
+      expandedPositionIds: expanded ? new Set([basisPosition.id]) : new Set<string>(),
       offerLines: lines,
       activePositionId: null,
       drafts: [],
@@ -163,7 +155,75 @@ function tableMarkup(
   );
 }
 
+function inspectorMarkup(
+  options: SupplierOption[],
+  decisions: CentralSupplierDecision[] = [],
+  activeOptionId?: string
+): string {
+  const reviewed = position(options);
+  const lines = new Map<string, OfferLine>(
+    options.flatMap((candidate) =>
+      candidate.matchedOfferLineIds.map(
+        (lineId) =>
+          [
+            lineId,
+            {
+              ...offerLine,
+              id: lineId,
+              manufacturer: candidate.supplierLabel,
+              interpretedUnitPrice: candidate.primaryPrice,
+              interpretedTotalPrice: candidate.pricedTotal,
+              evidence: [
+                {
+                  ...evidence,
+                  id: `evidence-${lineId}`,
+                  documentId: candidate.supplierDocumentId
+                }
+              ]
+            }
+          ] as const
+      )
+    )
+  );
+  const selectedOptionId = decisions.at(-1)?.selectedSupplierOptionId ?? null;
+  const activeOption = options.find((candidate) => candidate.id === activeOptionId) ?? options[0];
+  return renderToStaticMarkup(
+    createElement(PositionDetailsPane, {
+      position: reviewed,
+      option: activeOption,
+      selectedOptionId,
+      pendingOptionId: null,
+      offerLines: lines,
+      tab: "ORIGINAL_DOCUMENT",
+      sources: [],
+      activeSourceKey: null,
+      sourceView: null,
+      positionIndex: 0,
+      positionTotal: 1,
+      onTab: () => undefined,
+      onSourceSelect: () => undefined,
+      onSourceView: () => undefined,
+      onBasisSource: () => undefined,
+      onSupplierSource: () => undefined,
+      onPreviewOption: () => undefined,
+      onSelectOption: () => undefined,
+      onFullscreen: () => undefined,
+      onPrevious: () => undefined,
+      onNext: () => undefined,
+      onClose: () => undefined
+    })
+  );
+}
+
 describe("LV operator selection table", () => {
+  it("keeps an unconfirmed supplier candidate visible for source review", () => {
+    const candidate = option("pending-review", "Lieferant A", 100, {
+      matchingAccepted: false, matchingReliable: false, comparableTotal: null
+    });
+    const html = inspectorMarkup([candidate]);
+    expect(html).toContain('data-supplier-option="pending-review"');
+    expect(html).toMatch(/disabled=""[^>]*aria-label="Lieferant A auswählen"/);
+  });
   it("keeps the cheapest recommendation separate from operator selection", () => {
     const reviewed = position([
       option("option-a", "Supplier A", 120),
@@ -171,7 +231,11 @@ describe("LV operator selection table", () => {
     ]);
     expect(cheapestFoundOption(reviewed)?.id).toBe("option-b");
     expect(operatorSelectedOption(reviewed, undefined)).toBeUndefined();
-    expect(tableMarkup(reviewed.options)).toContain("Nicht ausgewählt");
+    const markup = tableMarkup(reviewed.options);
+    expect(markup).toContain("Vorschlag");
+    expect(markup).toContain("Supplier B");
+    expect(markup).toContain('data-price-state="cheapest"');
+    expect(markup).toContain("Offen");
   });
 
   it("shows an operator selection even when another option is cheaper", () => {
@@ -181,25 +245,65 @@ describe("LV operator selection table", () => {
     ]);
     const selected = decision("option-a");
     expect(operatorSelectedOption(reviewed, selected)?.id).toBe("option-a");
-    const markup = tableMarkup(reviewed.options, [selected]);
+    const markup = inspectorMarkup(reviewed.options, [selected], "option-a");
     expect(markup).toContain("Supplier A");
-    expect(markup).toContain("aria-pressed=\"true\"");
-    expect(markup.indexOf('data-supplier-option="option-a"')).toBeLessThan(
-      markup.indexOf('data-supplier-option="option-b"')
+    expect(markup).toContain('aria-pressed="true"');
+    expect(markup.indexOf('data-supplier-option="option-b"')).toBeLessThan(
+      markup.indexOf('data-supplier-option="option-a"')
     );
-    expect(markup).toContain("Günstigster Preis");
+    expect(markup).toContain("Günstigster Vorschlag");
+    expect(markup).toContain('data-price-state="selected"');
+    expect(markup).toContain('data-price-state="cheapest"');
+  });
+
+  it("marks the lowest unsafe price for review instead of recommending it", () => {
+    const reviewed = position([
+      option("option-review", "Supplier Review", 75, {
+        technicalComparisonStatus: "UNRESOLVED"
+      }),
+      option("option-safe", "Supplier Safe", 90)
+    ]);
+    const markup = inspectorMarkup(reviewed.options);
+    expect(markup).toContain('data-recommendation-state="review"');
+    expect(markup).toContain("Günstigster Preis · prüfen");
+    expect(markup).not.toContain("Günstigster Vorschlag</small>");
+  });
+
+  it("renders the project context and LV actions in one header", () => {
+    const markup = renderToStaticMarkup(
+      createElement(
+        LvPageHeader as never,
+        {
+          warnings: [],
+          warningOpen: false,
+          onToggleWarnings: () => undefined,
+          onSelectWarning: () => undefined,
+          projectContext: {
+            name: "Ein außergewöhnlich langes Benzbergareal-Projekt mit Zusatz",
+            leaving: false,
+            onBack: () => undefined,
+            onDocuments: () => undefined,
+            onAddDocuments: () => undefined
+          }
+        } as never
+      )
+    );
+    expect((markup.match(/<header/g) ?? []).length).toBe(1);
+    expect(markup).toContain("LV-Vergleich");
+    expect(markup).toContain("Heizung");
+    expect(markup).toContain("Dokumente hinzufügen");
+    expect(markup).toContain('title="Ein außergewöhnlich langes Benzbergareal-Projekt mit Zusatz"');
+    expect(markup).toContain("Fortschritt");
   });
 
   it.each([1, 4])("renders every supplier row for %i supplier options", (count) => {
     const options = Array.from({ length: count }, (_, index) =>
       option(`option-${index}`, `Supplier ${index + 1}`, 100 + index)
     );
-    const markup = tableMarkup(options);
+    const markup = inspectorMarkup(options);
     expect((markup.match(/data-supplier-option=/g) ?? []).length).toBe(count);
     expect((markup.match(/aria-label="Quelle /g) ?? []).length).toBe(count);
-    expect((markup.match(/aria-label="Info Supplier/g) ?? []).length).toBe(
-      count
-    );
+    expect((markup.match(/aria-label="Info Supplier/g) ?? []).length).toBe(count);
   });
 
   it("hides unassigned supplier placeholders and uses one compact empty state", () => {
@@ -214,11 +318,10 @@ describe("LV operator selection table", () => {
       matchingAccepted: false,
       status: "MATCHING_UNCLEAR"
     });
-    const markup = tableMarkup([unavailable]);
+    const markup = inspectorMarkup([unavailable]);
     expect(markup).not.toContain("Nicht zugeordnete Lieferanten");
     expect(markup).not.toContain("Reisser");
-    expect(markup).toContain("Zuordnung prüfen");
-    expect(markup).toContain("Hinweise anzeigen");
+    expect(markup).toContain("Kein sicheres Angebot zugeordnet");
     expect(markup).not.toContain("data-supplier-option=");
     expect(markup).not.toContain("Auswählen");
     expect(markup).not.toContain("Zur Quelle");
@@ -233,7 +336,7 @@ describe("LV operator selection table", () => {
       materialScopeStatus: "EXPLICIT_NO_OFFER",
       status: "NO_OFFER"
     });
-    const markup = tableMarkup([explicitNoOffer]);
+    const markup = inspectorMarkup([explicitNoOffer]);
     expect(markup).toContain('data-option-validity="EXPLICIT_NO_OFFER"');
     expect(markup).toContain("Nicht angeboten");
     expect(markup).toContain("Reisser");
@@ -300,24 +403,22 @@ describe("LV operator selection table", () => {
       [selected],
       false
     );
-    expect(markup).toContain(
-      'data-position-selection-state="SELECTED_VALID"'
-    );
+    expect(markup).toContain('data-position-selection-state="SELECTED_VALID"');
     expect(markup).toContain("Reisser");
     expect(markup).not.toContain("supplier-brand-mark");
   });
 
-  it("renders one stable position container and one supplier grid", () => {
-    const markup = tableMarkup([option("option-pm", "P&M", 300)]);
-    expect(markup).toContain("class=\"lv-list-section-row\"");
-    expect(markup).toContain("class=\"lv-position-card expanded");
-    expect(markup).toContain("class=\"lv-offer-grid lv-offer-grid-header");
-    expect(markup).toContain("class=\"lv-offer-grid lv-offer-row");
-    expect(markup).not.toContain("<tbody");
-    expect(markup).toContain("1 Angebot verfügbar");
-    expect(markup).toContain('data-price-provenance="SOURCE_GP"');
-    expect(markup).toContain("Gesamtpreis aus Angebot");
-    expect(markup).toContain("Preis (EUR)");
+  it("keeps positions flat and moves the supplier comparison into the inspector", () => {
+    const options = [option("option-pm", "P&M", 300)];
+    const master = tableMarkup(options);
+    const inspector = inspectorMarkup(options);
+    expect(master).toContain('class="lv-list-section-row"');
+    expect(master).toContain('class="lv-position-card collapsed');
+    expect(master).not.toContain("data-supplier-option=");
+    expect(inspector).toContain("data-offer-comparison");
+    expect(inspector).toContain('data-supplier-option="option-pm"');
+    expect(inspector).toContain('data-price-provenance="SOURCE_GP"');
+    expect(inspector).toContain("Angebots-GP");
   });
 
   it("uses source-confirmed GP and a display-only bundle role correction", () => {
@@ -357,17 +458,12 @@ describe("LV operator selection table", () => {
       total: 46_749.72,
       unitPrice: 7_791.62,
       state: "SOURCE_CONFIRMED_TOTAL",
-      labelDe: "Gesamtpreis bestätigt"
+      labelDe: "Gesamtpreis laut Quelle"
     });
     expect(supplierDisplayRole(lines[0], lines)).toBe("PRIMARY");
     expect(supplierDisplayRole(lines[1], lines)).toBe("COMPONENT");
-    expect(SUPPLIER_DISPLAY_ROLE_RULE_VERSION).toBe(
-      "supplier-display-role-v1"
-    );
-    expect(lines.map((line) => line.role)).toEqual([
-      "ALTERNATIVE",
-      "ALTERNATIVE"
-    ]);
+    expect(SUPPLIER_DISPLAY_ROLE_RULE_VERSION).toBe("supplier-display-role-v1");
+    expect(lines.map((line) => line.role)).toEqual(["ALTERNATIVE", "ALTERNATIVE"]);
   });
 });
 
@@ -451,12 +547,10 @@ describe("LV warnings and workspace", () => {
         onCollapseAll: () => undefined
       })
     );
-    expect(markup).toContain(
-      'placeholder="Position, Beschreibung oder Artikel suchen..."'
-    );
+    expect(markup).toContain('placeholder="Position, Kurzbezeichnung oder Artikel suchen"');
     expect(markup).toContain("Alle Lieferanten");
-    expect(markup).toContain("Ausgewählt");
-    expect(markup).toContain("Nicht ausgewählt");
+    expect(markup).toContain("Entschieden");
+    expect(markup).toContain("Offen");
     expect(markup).toContain("Mit Hinweisen");
     expect(markup).not.toMatch(/Hersteller filtern|Kategorie filtern/);
   });
@@ -512,31 +606,40 @@ describe("supplier source sidebar", () => {
       ["3000", "NHE16", "Wärmepumpe L/W Helox 16 Außengerät", 7_791.62, 46_749.72, "PRIMARY"],
       ["4000", "NHMHV9H", "Hydraulikmodul HV 9H", 1_910.06, 11_460.36, "COMPONENT"],
       ["5000", "NBKSL", "Bodenkonsole BKS-L", 218.89, 1_313.34, "COMPONENT"]
-    ].map(([supplierPositionNumber, articleNumber, description, unitPrice, totalPrice, displayRole]) => ({
-      key: `supplier:${supplierPositionNumber}`,
-      kind: "supplier",
-      tabLabel: "Gienger",
-      documentId: "gienger-document",
-      documentRevisionId: "gienger-revision",
-      documentLabel: "supplier.pdf",
-      pageNumber: 2,
-      pageCount: 3,
-      evidence: [evidence],
-      positionNumber: "1.1.10",
-      title: String(supplierPositionNumber),
-      description: String(description),
-      quantity: 6,
-      unit: "St",
-      supplier: "Gienger",
-      lineId: `line-${supplierPositionNumber}`,
-      lineRole: "ALTERNATIVE",
-      displayRole: displayRole as SourceRecord["displayRole"],
-      supplierPositionNumber: String(supplierPositionNumber),
-      articleNumber: String(articleNumber),
-      unitPrice: Number(unitPrice),
-      totalPrice: Number(totalPrice),
-      context: []
-    }));
+    ].map(
+      ([
+        supplierPositionNumber,
+        articleNumber,
+        description,
+        unitPrice,
+        totalPrice,
+        displayRole
+      ]) => ({
+        key: `supplier:${supplierPositionNumber}`,
+        kind: "supplier",
+        tabLabel: "Gienger",
+        documentId: "gienger-document",
+        documentRevisionId: "gienger-revision",
+        documentLabel: "supplier.pdf",
+        pageNumber: 2,
+        pageCount: 3,
+        evidence: [evidence],
+        positionNumber: "1.1.10",
+        title: String(supplierPositionNumber),
+        description: String(description),
+        quantity: 6,
+        unit: "St",
+        supplier: "Gienger",
+        lineId: `line-${supplierPositionNumber}`,
+        lineRole: "ALTERNATIVE",
+        displayRole: displayRole as SourceRecord["displayRole"],
+        supplierPositionNumber: String(supplierPositionNumber),
+        articleNumber: String(articleNumber),
+        unitPrice: Number(unitPrice),
+        totalPrice: Number(totalPrice),
+        context: []
+      })
+    );
     const markup = renderToStaticMarkup(
       createElement(SourceOverlay, {
         sources,

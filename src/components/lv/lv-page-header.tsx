@@ -1,11 +1,8 @@
 "use client";
 
-import { FileDown, MoreHorizontal } from "lucide-react";
-import Link from "next/link";
-import {
-  WarningCenter,
-  type LvWarning
-} from "@/components/lv/warning-center";
+import { ArrowLeft, ChevronDown, FileDown, FilePlus2, FolderOpen } from "lucide-react";
+import type { ReactNode } from "react";
+import { WarningCenter, type LvWarning } from "@/components/lv/warning-center";
 
 export function LvPageHeader({
   warnings,
@@ -13,7 +10,11 @@ export function LvPageHeader({
   onToggleWarnings,
   onSelectWarning,
   onExportExcel,
-  onExportPdf
+  onExportPdf,
+  selectedCount = 0,
+  totalCount = 0,
+  projectContext,
+  utilityActions
 }: {
   warnings: LvWarning[];
   warningOpen: boolean;
@@ -21,14 +22,87 @@ export function LvPageHeader({
   onSelectWarning: (warning: LvWarning) => void;
   onExportExcel?: () => void;
   onExportPdf?: () => void;
+  selectedCount?: number;
+  totalCount?: number;
+  projectContext?: {
+    name: string;
+    leaving: boolean;
+    onBack: () => void;
+    onDocuments: () => void;
+    onAddDocuments: () => void;
+  };
+  utilityActions?: ReactNode;
 }) {
+  const affectedPositionCount = new Set(warnings.map((warning) => warning.positionId)).size;
+  const progress = totalCount ? Math.round((selectedCount / totalCount) * 100) : 0;
+
   return (
     <header className="lv-page-header">
-      <div>
-        <span>Smart Procurement Tool</span>
-        <h1>Heizung LV-Vergleich</h1>
+      <div className="lv-page-identity">
+        {projectContext ? (
+          <button
+            type="button"
+            className="lv-header-back"
+            disabled={projectContext.leaving}
+            onClick={projectContext.onBack}
+            aria-label="Zurück zu Projekte"
+          >
+            <ArrowLeft size={16} />
+          </button>
+        ) : null}
+        <div className="lv-title-stack">
+          <nav aria-label="Projektpfad">
+            <span>Projekte</span>
+            <i>/</i>
+            <strong title={projectContext?.name}>
+              {projectContext?.name ?? "Smart Procurement"}
+            </strong>
+          </nav>
+          <div className="lv-title-line">
+            <h1>LV-Vergleich</h1>
+            <span>Heizung</span>
+          </div>
+        </div>
       </div>
-      <div>
+
+      <div
+        className="lv-header-progress"
+        aria-label={`${selectedCount} von ${totalCount} entschieden`}
+      >
+        <div>
+          <span>Fortschritt</span>
+          <strong>
+            {selectedCount} / {totalCount}
+          </strong>
+        </div>
+        <span className="lv-progress-track" aria-hidden="true">
+          <i style={{ width: `${progress}%` }} />
+        </span>
+      </div>
+
+      <div className="lv-page-actions">
+        {projectContext ? (
+          <>
+            <button
+              type="button"
+              className="lv-header-action"
+              disabled={projectContext.leaving}
+              onClick={projectContext.onDocuments}
+            >
+              <FolderOpen size={16} /> Dokumente
+            </button>
+            <button
+              type="button"
+              className="lv-header-icon-action"
+              onClick={projectContext.onAddDocuments}
+              aria-label="Dokumente hinzufügen"
+              title="Dokumente hinzufügen"
+            >
+              <FilePlus2 size={17} />
+            </button>
+          </>
+        ) : null}
+
         <WarningCenter
           warnings={warnings}
           open={warningOpen}
@@ -36,33 +110,25 @@ export function LvPageHeader({
           onClose={onToggleWarnings}
           onSelect={onSelectWarning}
         />
-        {onExportExcel ? (
-          <button className="button button-secondary" onClick={onExportExcel}>
-            <FileDown size={16} /> Excel export
-          </button>
-        ) : (
-          <Link className="button button-secondary" href="/api/export?format=xlsx">
-            <FileDown size={16} /> Excel export
-          </Link>
-        )}
-        {onExportPdf ? (
-          <button className="button button-secondary" onClick={onExportPdf}>
-            <FileDown size={16} /> PDF export
-          </button>
-        ) : (
-          <Link className="button button-secondary" href="/api/export?format=pdf">
-            <FileDown size={16} /> PDF export
-          </Link>
-        )}
-        {!onExportExcel ? (
-          <Link className="button button-secondary" href="/api/review-package?format=json">
-            Review-Paket
-          </Link>
-        ) : null}
-        <button className="icon-button" aria-label="Weitere Aktionen">
-          <MoreHorizontal size={18} />
-        </button>
+
+        <details className="lv-export-menu">
+          <summary>
+            <FileDown size={16} /> Exportieren <ChevronDown size={14} />
+          </summary>
+          <div>
+            <button type="button" onClick={onExportExcel} disabled={!onExportExcel}>
+              Excel-Datei
+            </button>
+            <button type="button" onClick={onExportPdf} disabled={!onExportPdf}>
+              PDF-Bericht
+            </button>
+          </div>
+        </details>
+        {utilityActions}
       </div>
+      <span className="lv-header-a11y-status" role="status" aria-live="polite">
+        {affectedPositionCount} Positionen mit Hinweisen
+      </span>
     </header>
   );
 }

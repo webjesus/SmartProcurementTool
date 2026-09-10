@@ -16,6 +16,9 @@ export type BrowserPdfInspection = {
   textLayerCharacterCount: number;
   inspectedPageCount: number;
   pagesWithText: number;
+  ocrText?: string;
+  ocrPageCount?: number;
+  ocrMeanConfidence?: number | null;
 };
 
 export type BrowserDocumentClassification = {
@@ -77,31 +80,56 @@ function escapePattern(value: string): string {
 function supplierFrom(value: string): string | null {
   for (const supplier of SUPPLIER_BRANDS) {
     if (
-      [supplier.displayName, supplier.shortName, ...supplier.aliases].some(
-        (alias) =>
-          new RegExp(
-            `(?:^|[^\\p{L}\\p{N}])${escapePattern(alias).replace(/\\ /g, "\\s+")}(?:$|[^\\p{L}\\p{N}])`,
-            "iu"
-          ).test(value)
+      [supplier.displayName, supplier.shortName, ...supplier.aliases].some((alias) =>
+        new RegExp(
+          `(?:^|[^\\p{L}\\p{N}])${escapePattern(alias).replace(/\\ /g, "\\s+")}(?:$|[^\\p{L}\\p{N}])`,
+          "iu"
+        ).test(value)
       )
     ) {
       return supplier.shortName;
     }
   }
   if (/pfeiffer\s*&\s*may|p\s*&\s*m\b/iu.test(value)) return "P&M";
-  return matchValue(value, [
-    /(?:Lieferant|Anbieter)\s*[:_-]?\s*([\p{L}\p{N}& .-]{2,80})/iu
-  ]);
+  return matchValue(value, [/(?:Lieferant|Anbieter)\s*[:_-]?\s*([\p{L}\p{N}& .-]{2,80})/iu]);
 }
 
 function count(value: string, pattern: RegExp): number {
   return [...value.matchAll(pattern)].length;
 }
 
-function preliminaryPositionCount(value: string): number {
-  const basis = value.match(/\b\d+(?:\.\d+){2,}\.?(?=\s)/gu) ?? [];
-  const supplier = value.match(/\b(?:LV\.?\s*Pos\.?|LVNR)\s*\d+(?:[ .]\d+){2,}/giu) ?? [];
-  return new Set([...basis, ...supplier].map((item) => item.replace(/\s+/g, "."))).size;
+function preliminaryPositionCount(value: string, documentType: BrowserDocumentType): number {
+  const normalizeCandidate = (candidate: string) =>
+    candidate
+      .normalize("NFKC")
+      .replace(/\s*\.\s*|\s+/g, ".")
+      .replace(/^\.|\.$/g, "")
+      .toLocaleLowerCase("de");
+  const collect = (pattern: RegExp) =>
+    new Set(
+      [...value.matchAll(pattern)]
+        .map((match) => normalizeCandidate(match[1] ?? ""))
+        .filter(Boolean)
+    );
+  const flexibleLvNumber = String.raw`\d+(?:(?:\s*\.\s*|\s+)\d+){2,}`;
+  const explicitLv = collect(
+    new RegExp(
+      String.raw`\b(?:LVNR|(?:zu\s+)?LV[.\s-]*Pos(?:ition)?\.?)\s*:?\s*(${flexibleLvNumber})`,
+      "giu"
+    )
+  );
+  const supplierPositions = collect(/\bAngebotsposition\s+([\p{L}\p{N}./-]+)/giu);
+  const bareLv = collect(new RegExp(String.raw`\b(${flexibleLvNumber})\.?(?=\s|$)`, "gu"));
+
+  if (documentType === "BASIS_LV") {
+    return new Set([...bareLv, ...explicitLv]).size;
+  }
+  if (documentType === "SUPPLIER_OFFER" || documentType === "MANUFACTURER_OFFER") {
+    // Supplier layouts often print both their row number and the LV reference.
+    // The larger distinct inventory is a safer preliminary row count than their union.
+    return Math.max(explicitLv.size, supplierPositions.size, bareLv.size);
+  }
+  return 0;
 }
 
 function disciplineFrom(value: string): {
@@ -138,9 +166,7 @@ function disciplineFrom(value: string): {
     };
   }
   const heatingScore =
-    heatingStrong * 4 +
-    Math.min(heatingWeak, 8) +
-    Math.min(heatingProducts, 6) * 2;
+    heatingStrong * 4 + Math.min(heatingWeak, 8) + Math.min(heatingProducts, 6) * 2;
   const sanitaryScore = sanitaryStrong * 4 + Math.min(sanitaryWeak, 8);
   if (heatingScore >= sanitaryScore + 4) {
     return {
@@ -204,11 +230,13 @@ function roleScores(value: string, fileName: string) {
 }
 
 function offerNumberFrom(value: string, fileName: string): string | null {
-  return matchValue(value, [
-    /(?:Referenzangebot\s*-\s*Netto\s*)?Angebotsnummer\s*[:#]?\s*(\d{6,}(?:[-/]\d{1,3})?)/iu,
-    /\bAngebot\s+(?:Nr\.?\s*[:#]?\s*)?(\d{6,}(?:[-/]\d{1,3})?)/iu,
-    /\b(\d{6,}(?:[-/]\d{1,3})?)\s+Angebot\s+Nr\.?/iu
-  ]) ?? matchValue(fileName, [/\b(\d{6,}(?:-\d{1,3})?)\b/u]);
+  return (
+    matchValue(value, [
+      /(?:Referenzangebot\s*-\s*Netto\s*)?Angebotsnummer\s*[:#]?\s*(\d{6,}(?:[-/]\d{1,3})?)/iu,
+      /\bAngebot\s+(?:Nr\.?\s*[:#]?\s*)?(\d{6,}(?:[-/]\d{1,3})?)/iu,
+      /\b(\d{6,}(?:[-/]\d{1,3})?)\s+Angebot\s+Nr\.?/iu
+    ]) ?? matchValue(fileName, [/\b(\d{6,}(?:-\d{1,3})?)\b/u])
+  );
 }
 
 export function classifyBrowserDocumentContent(input: {
@@ -218,24 +246,22 @@ export function classifyBrowserDocumentContent(input: {
   const metadataText = Object.values(input.inspection.metadata)
     .filter((value): value is string => typeof value === "string")
     .join(" ");
+  const ocrText = input.inspection.ocrText?.trim() ?? "";
   const value = compactOfferWord(
-    normalized(`${metadataText}\n${input.inspection.text}`)
+    normalized(`${metadataText}\n${input.inspection.text}\n${ocrText}`)
   );
+  const ocrCharacterCount = ocrText.replace(/\s+/gu, "").length;
   const scanState: BrowserScanState =
     input.inspection.textLayerCharacterCount < 40
-      ? "OCR_REQUIRED"
+      ? ocrCharacterCount >= 40
+        ? "OCR_AVAILABLE"
+        : "OCR_REQUIRED"
       : input.inspection.pagesWithText < input.inspection.inspectedPageCount
         ? "PARTIAL_TEXT"
         : "TEXT_AVAILABLE";
   const supplierName = supplierFrom(value);
-  const offerNumber = offerNumberFrom(
-    value,
-    supplierName ? input.fileName : ""
-  );
-  const versionPatterns = [
-    /\bVersion\s*[:.]?\s*([A-Z0-9.-]+)/iu,
-    /\bV\.\s*([0-9]+)\b/iu
-  ];
+  const offerNumber = offerNumberFrom(value, supplierName ? input.fileName : "");
+  const versionPatterns = [/\bVersion\s*[:.]?\s*([A-Z0-9.-]+)/iu, /\bV\.\s*([0-9]+)\b/iu];
   const documentVersion =
     matchValue(normalized(input.inspection.text), versionPatterns) ??
     matchValue(normalized(metadataText), versionPatterns);
@@ -270,28 +296,32 @@ export function classifyBrowserDocumentContent(input: {
     signals.push("Keine nutzbare Textebene");
     warnings.push("Scan erkannt. OCR erforderlich.");
   } else if (
-    /\b(?:kein\s+Angebot|nicht\s+angeboten|wir\s+sehen\s+von\s+einem\s+Angebot\s+ab|Absage)\b/iu.test(
-      value
-    )
+    /\bwir\s+sehen\s+von\s+einem\s+Angebot\s+ab\b/iu.test(value) ||
+    (/\b(?:kein\s+Angebot|nicht\s+angeboten|Absage)\b/iu.test(value) &&
+      preliminaryPositionCount(value, "SUPPLIER_OFFER") === 0)
   ) {
     documentType = "EXPLICIT_NO_BID";
     roleConfidence = supplierName ? "HIGH" : "MEDIUM";
     signals.push("Explizite Nichtangebots-Erklärung erkannt");
   } else if (
-    /\bKalkulation\s*\(Gesamt\)|\bGeberit\s+ProPlanner\b|\bGIS\s+Tragsystem\b/iu.test(
-      value
-    )
+    /\bKalkulation\s*\(Gesamt\)|\bGeberit\s+ProPlanner\b|\bGIS\s+Tragsystem\b/iu.test(value)
   ) {
     documentType = "TECHNICAL_CALCULATION";
     roleConfidence = "HIGH";
     signals.push("Technische Kalkulationsstruktur erkannt");
+  } else if (
+    /\berhalten\s+Sie\b.{0,100}\bausgefüllte\w*\s+Leistungsverzeichnis\s+zurück\b/iu.test(value) &&
+    /\b(?:unser\s+Angebot|Preisbindung)\b/iu.test(value)
+  ) {
+    // A returned, filled-in tender is an offer; its appended pages retain the
+    // engineering office's original Basis-LV headings and position numbers.
+    documentType = "SUPPLIER_OFFER";
+    roleConfidence = "MEDIUM";
+    signals.push("Ausgefülltes Leistungsverzeichnis als Angebot zurückgesandt");
   } else if (scores.basis >= 12 && scores.basis >= scores.offer + 5) {
     documentType = "BASIS_LV";
     roleConfidence = "HIGH";
-  } else if (
-    scores.offer >= 8 ||
-    (scores.offer >= 4 && Boolean(supplierName && offerNumber))
-  ) {
+  } else if (scores.offer >= 8 || (scores.offer >= 4 && Boolean(supplierName && offerNumber))) {
     documentType = "SUPPLIER_OFFER";
     roleConfidence = supplierName && offerNumber ? "HIGH" : "MEDIUM";
   } else if (/\b(?:Datenblatt|Produktinformation|Technische Unterlage)\b/iu.test(value)) {
@@ -309,18 +339,18 @@ export function classifyBrowserDocumentContent(input: {
     warnings.push("Dokumentrolle konnte nicht sicher bestimmt werden.");
   }
 
-  if (
-    documentType === "BASIS_LV" &&
-    scores.offer > scores.basis
-  ) {
+  if (scanState === "OCR_AVAILABLE") {
+    roleConfidence = roleConfidence === "LOW" ? "LOW" : "MEDIUM";
+    signals.push("Lokales OCR verwendet");
+    warnings.push("Lokales OCR verwendet. Dokumentrolle und Fundstellen müssen geprüft werden.");
+  }
+
+  if (documentType === "BASIS_LV" && scores.offer > scores.basis) {
     documentType = "SUPPLIER_OFFER";
     roleConfidence = "HIGH";
     warnings.push("Eindeutige Angebotsmerkmale schließen Basis-LV aus.");
   }
-  if (
-    ["SUPPLIER_OFFER", "MANUFACTURER_OFFER"].includes(documentType) &&
-    !supplierName
-  ) {
+  if (["SUPPLIER_OFFER", "MANUFACTURER_OFFER"].includes(documentType) && !supplierName) {
     warnings.push("Lieferant konnte nicht sicher erkannt werden.");
   }
   if (discipline.discipline === "UNKNOWN") {
@@ -338,9 +368,8 @@ export function classifyBrowserDocumentContent(input: {
         : documentType === "BASIS_LV"
           ? "HIGH"
           : "LOW",
-    relation:
-      documentType === "SUPPLIER_OFFER" && offerNumber ? "HIGH" : "LOW",
-    scanState: "HIGH"
+    relation: documentType === "SUPPLIER_OFFER" && offerNumber ? "HIGH" : "LOW",
+    scanState: scanState === "OCR_AVAILABLE" ? "MEDIUM" : "HIGH"
   };
   return {
     detectedDocumentType: documentType,
@@ -351,10 +380,7 @@ export function classifyBrowserDocumentContent(input: {
     documentVersion,
     revision: null,
     revisionOfDocumentId: null,
-    relationType:
-      documentType === "SUPPLIER_OFFER"
-        ? "SEPARATE_OFFER"
-        : "UNKNOWN_RELATION",
+    relationType: documentType === "SUPPLIER_OFFER" ? "SEPARATE_OFFER" : "UNKNOWN_RELATION",
     scanState,
     projectName,
     projectNumber,
@@ -363,7 +389,7 @@ export function classifyBrowserDocumentContent(input: {
     dimensions,
     signals,
     warnings,
-    preliminaryPositionCount: preliminaryPositionCount(value)
+    preliminaryPositionCount: preliminaryPositionCount(value, documentType)
   };
 }
 
@@ -380,9 +406,13 @@ export function isStructurallyPlausibleBasis(
   >
 ): boolean {
   const signalCount = document.classificationSignals.filter((signal) =>
-    ["Angebotsaufforderung", "LV-Daten", "LV-Bezeichnung", "LV-Nummer", "Basis-Positionsstruktur"].includes(
-      signal
-    )
+    [
+      "Angebotsaufforderung",
+      "LV-Daten",
+      "LV-Bezeichnung",
+      "LV-Nummer",
+      "Basis-Positionsstruktur"
+    ].includes(signal)
   ).length;
   return (
     document.documentType === "BASIS_LV" &&
@@ -395,9 +425,39 @@ export function isStructurallyPlausibleBasis(
   );
 }
 
-export function invalidManualBasisWarning(
-  document: BrowserDocumentRecord
-): string | null {
+/** Resolve a formerly unreadable/unknown role without replacing a human assignment. */
+export function applyFullRunDocumentClassification(
+  document: BrowserDocumentRecord,
+  classification: BrowserDocumentClassification
+): BrowserDocumentRecord {
+  const unresolvedRole = ["SCAN_OCR_REQUIRED", "UNKNOWN"].includes(document.documentType);
+  const mayResolve = unresolvedRole && !document.manualRoleOverride;
+  return {
+    ...document,
+    scanState: classification.scanState,
+    ...(mayResolve
+      ? {
+          documentType: classification.documentType,
+          detectedDocumentType: classification.detectedDocumentType,
+          discipline:
+            document.discipline === "UNKNOWN" ? classification.discipline : document.discipline,
+          supplierName: document.supplierName ?? classification.supplierName,
+          offerNumber: document.offerNumber ?? classification.offerNumber,
+          projectName: document.projectName ?? classification.projectName,
+          projectNumber: document.projectNumber ?? classification.projectNumber,
+          lvNumber: document.lvNumber ?? classification.lvNumber,
+          classificationConfidence: classification.confidence,
+          classificationDimensions: classification.dimensions,
+          classificationSignals: classification.signals,
+          classificationWarnings: classification.warnings,
+          preliminaryPositionCount: classification.preliminaryPositionCount,
+          processingStatus: "PRÜFUNG_ERFORDERLICH" as const
+        }
+      : {})
+  };
+}
+
+export function invalidManualBasisWarning(document: BrowserDocumentRecord): string | null {
   if (document.detectedDocumentType !== "SUPPLIER_OFFER") return null;
   const supplier = document.supplierName ?? "einem Lieferanten";
   return `Die Datei enthält eindeutige Merkmale eines Lieferantenangebots von ${supplier} und entspricht wahrscheinlich keinem Basis-LV.`;
@@ -430,8 +490,7 @@ export function reconcileDocumentRelations(
     }
     const predecessor = related.at(-1)!;
     const versionChanged =
-      Boolean(document.documentVersion) &&
-      document.documentVersion !== predecessor.documentVersion;
+      Boolean(document.documentVersion) && document.documentVersion !== predecessor.documentVersion;
     return {
       ...document,
       relationType: versionChanged ? "NEW_REVISION" : "UNKNOWN_RELATION",
@@ -462,8 +521,7 @@ export function applyAutomaticBasisSelection(
       ...document,
       activeBasis:
         document.documentType === "BASIS_LV" &&
-        ((candidates.length === 1 &&
-          candidates[0] === document.documentId) ||
+        ((candidates.length === 1 && candidates[0] === document.documentId) ||
           (candidates.length > 1 &&
             manuallyActive.length === 1 &&
             manuallyActive[0].documentId === document.documentId))
@@ -488,13 +546,12 @@ export function buildDocumentClusters(
     if (document.documentType !== "BASIS_LV") continue;
     const identity = document.projectNumber ?? document.projectName;
     if (!identity) continue;
-    const projects =
-      basisProjectsByDiscipline.get(document.discipline) ?? [];
+    const projects = basisProjectsByDiscipline.get(document.discipline) ?? [];
     if (!projects.some((project) => project.canonical === identity)) {
       projects.push({
         canonical: identity,
-        aliases: [document.projectNumber, document.projectName].filter(
-          (value): value is string => Boolean(value)
+        aliases: [document.projectNumber, document.projectName].filter((value): value is string =>
+          Boolean(value)
         ),
         projectName: document.projectName,
         projectNumber: document.projectNumber
@@ -504,25 +561,20 @@ export function buildDocumentClusters(
   }
   for (const document of documents) {
     const discipline =
-      document.discipline === "INSTALLATIONSSYSTEME"
-        ? "SANITAER"
-        : document.discipline;
+      document.discipline === "INSTALLATIONSSYSTEME" ? "SANITAER" : document.discipline;
     const knownProjects = basisProjectsByDiscipline.get(discipline);
-    const documentIdentities = [
-      document.projectNumber,
-      document.projectName
-    ].filter((value): value is string => Boolean(value));
+    const documentIdentities = [document.projectNumber, document.projectName].filter(
+      (value): value is string => Boolean(value)
+    );
     const fuzzyBasisProject =
       documentIdentities.length && knownProjects
         ? knownProjects.find((project) =>
             documentIdentities.some((documentIdentity) => {
-              const normalizedIdentity =
-                documentIdentity.toLocaleLowerCase("de");
+              const normalizedIdentity = documentIdentity.toLocaleLowerCase("de");
               return project.aliases.some((identity) => {
                 const candidate = identity.toLocaleLowerCase("de");
                 return (
-                  normalizedIdentity.includes(candidate) ||
-                  candidate.includes(normalizedIdentity)
+                  normalizedIdentity.includes(candidate) || candidate.includes(normalizedIdentity)
                 );
               });
             })
@@ -532,17 +584,13 @@ export function buildDocumentClusters(
       fuzzyBasisProject ?? (knownProjects?.length === 1 ? knownProjects[0] : null);
     const inferredProject = resolvedBasisProject?.canonical ?? null;
     const key = [
-      inferredProject ??
-        document.projectNumber ??
-        document.projectName ??
-        "unknown-project",
+      inferredProject ?? document.projectNumber ?? document.projectName ?? "unknown-project",
       discipline
     ].join(":");
     const cluster = map.get(key) ?? {
       id: key,
       projectName: resolvedBasisProject?.projectName ?? document.projectName,
-      projectNumber:
-        resolvedBasisProject?.projectNumber ?? document.projectNumber,
+      projectNumber: resolvedBasisProject?.projectNumber ?? document.projectNumber,
       discipline,
       basisDocumentIds: [],
       supplierDocumentIds: [],
@@ -552,9 +600,7 @@ export function buildDocumentClusters(
     if (document.documentType === "BASIS_LV") {
       cluster.basisDocumentIds.push(document.documentId);
     } else if (
-      ["SUPPLIER_OFFER", "MANUFACTURER_OFFER", "EXPLICIT_NO_BID"].includes(
-        document.documentType
-      )
+      ["SUPPLIER_OFFER", "MANUFACTURER_OFFER", "EXPLICIT_NO_BID"].includes(document.documentType)
     ) {
       cluster.supplierDocumentIds.push(document.documentId);
     } else if (document.documentType === "SCAN_OCR_REQUIRED") {
