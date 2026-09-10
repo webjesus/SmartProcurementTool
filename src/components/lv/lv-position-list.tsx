@@ -9,6 +9,7 @@ import {
   Minus,
   Sparkles
 } from "lucide-react";
+import { useLayoutEffect, useRef } from "react";
 import type { OfferLine, SupplierOption } from "@/domain/contracts";
 import type { CentralSupplierDecision, DecisionDraftRecord } from "@/domain/central-decision";
 import type { ProjectReviewPosition } from "@/domain/project-review";
@@ -266,12 +267,33 @@ export function LvPositionList(props: LvPositionListProps) {
     drafts,
     decisions,
     scrollTop,
+    page,
+    pageSize,
     total,
     onScrollTop,
     onToggleSection,
     onTogglePosition,
     onOpenBasisSource
   } = props;
+  const listRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    const element = listRef.current;
+    if (!element) return;
+
+    const restoreScroll = () => {
+      if (Math.abs(element.scrollTop - scrollTop) > 2) {
+        element.scrollTop = scrollTop;
+      }
+    };
+
+    // Restore once before paint and once after the async position rows have
+    // been laid out. The second pass prevents a short-lived list from
+    // clamping a saved scroll position back to zero during project reload.
+    restoreScroll();
+    const frame = window.requestAnimationFrame(restoreScroll);
+    return () => window.cancelAnimationFrame(frame);
+  }, [collapsed, page, pageSize, scrollTop, sections]);
 
   return (
     <section className="lv-list-pane" data-lv-list-pane data-position-navigator aria-label="Positionen">
@@ -281,11 +303,7 @@ export function LvPositionList(props: LvPositionListProps) {
       <div
         className="lv-position-list"
         onScroll={(event) => onScrollTop(event.currentTarget.scrollTop)}
-        ref={(element) => {
-          if (element && Math.abs(element.scrollTop - scrollTop) > 2) {
-            element.scrollTop = scrollTop;
-          }
-        }}
+        ref={listRef}
       >
         {sections.map((section) => {
           const isCollapsed = collapsed.has(section.id);

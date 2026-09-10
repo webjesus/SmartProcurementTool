@@ -1170,6 +1170,8 @@ export function LvComparisonPage({
         lvOrderedPositionIds: [...positions].sort(compareLv).map((candidate) => candidate.basis.id),
         pageSize
       });
+      const preserveRestoredListScroll =
+        restoredActivePositionPending.current && selectedBasisPositionId === position.basis.id;
       const timeout = window.setTimeout(() => {
         if (navigation.resetFilters) {
           setSearch("");
@@ -1179,7 +1181,7 @@ export function LvComparisonPage({
         }
         if (navigation.expandAll) setCollapsed(new Set());
         setPage(navigation.page);
-        setTableScroll(0);
+        if (!preserveRestoredListScroll) setTableScroll(0);
         setSelectedBasisPositionId(position.basis.id);
         setActivePositionId(position.basis.id);
         setExpandedPositionIds((current) => new Set(current).add(position.basis.id));
@@ -1200,6 +1202,8 @@ export function LvComparisonPage({
       lvOrderedPositionIds: [...positions].sort(compareLv).map((candidate) => candidate.basis.id),
       pageSize
     });
+    const preserveRestoredListScroll =
+      restoredActivePositionPending.current && selectedBasisPositionId === position.basis.id;
     const timeout = window.setTimeout(() => {
       if (navigation.resetFilters) {
         setSearch("");
@@ -1209,7 +1213,7 @@ export function LvComparisonPage({
       }
       if (navigation.expandAll) setCollapsed(new Set());
       setPage(navigation.page);
-      setTableScroll(0);
+      if (!preserveRestoredListScroll) setTableScroll(0);
       setSelectedBasisPositionId(position.basis.id);
       setActivePositionId(position.basis.id);
       setSourceKey(source.key);
@@ -1224,6 +1228,7 @@ export function LvComparisonPage({
     pageSize,
     pilot,
     positions,
+    selectedBasisPositionId,
     visible,
     workspaceReady
   ]);

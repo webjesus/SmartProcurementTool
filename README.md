@@ -12,6 +12,15 @@ The repository ships only synthetic fixtures. The real company corpus in `pdffir
 4. Run `npm run dev`.
 5. Open `http://localhost:3000`.
 
+## Vercel deployment
+
+The repository is configured for Vercel with the Next.js framework, `npm ci`
+for installation and `npm run build` for production builds. Pushes to the
+GitHub `main` branch trigger the connected Vercel project automatically.
+Vercel deployments use the browser-local persistence profile, so the current
+interface can be reviewed without a company database. Local on-premise
+deployments keep using the server profile configured in `.env.local`.
+
 For local corpus access set `LOCAL_CORPUS_ENABLED=true`. `OPENAI_API_KEY` is needed only for `corpus:process`; it is not needed for the UI, tests, build or `corpus:scan`.
 
 ## Commands
