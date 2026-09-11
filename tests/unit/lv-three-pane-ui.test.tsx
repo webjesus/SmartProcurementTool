@@ -28,6 +28,8 @@ describe("approved three-pane LV workplace", () => {
     expect(html).toContain('href="/projects"');
     expect(html).not.toMatch(/MVP-Arbeitsstand|Browser-Testmodus|Projekt-Prototyp/);
     expect(html).toContain("Lokal gespeichert");
+    expect(html).toContain('data-lv-workspace="true"');
+    expect(html).toContain('data-lv-design="v2"');
   });
   it("keeps the real source as a sibling of the decision pane on both tabs", () => {
     for (const tab of ["OFFER_DATA", "ORIGINAL_DOCUMENT"] as const) {

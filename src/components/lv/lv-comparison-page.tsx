@@ -411,6 +411,7 @@ export function LvComparisonPage({
     onBack: () => void;
     onDocuments: () => void;
     onAddDocuments: () => void;
+    disciplineLabel?: string;
     utilityActions?: ReactNode;
   };
   browserLocal?: {
@@ -1486,7 +1487,11 @@ export function LvComparisonPage({
   }
 
   return (
-    <div className="lv-workspace lv-workspace--quiet" data-real-lv-workspace>
+    <div
+      className="lv-workspace lv-workspace--quiet"
+      data-real-lv-workspace
+      data-lv-design="v2"
+    >
       <LvPageHeader
         warnings={warnings}
         warningOpen={warningOpen}
@@ -1497,6 +1502,7 @@ export function LvComparisonPage({
         selectedCount={selectedPositionCount}
         totalCount={positions.length}
         projectContext={headerContext}
+        disciplineLabel={headerContext?.disciplineLabel}
         utilityActions={headerContext?.utilityActions}
       />
       <LvToolbar

@@ -14,6 +14,7 @@ export function LvPageHeader({
   selectedCount = 0,
   totalCount = 0,
   projectContext,
+  disciplineLabel = "Heizung",
   utilityActions
 }: {
   warnings: LvWarning[];
@@ -31,6 +32,7 @@ export function LvPageHeader({
     onDocuments: () => void;
     onAddDocuments: () => void;
   };
+  disciplineLabel?: string;
   utilityActions?: ReactNode;
 }) {
   const affectedPositionCount = new Set(warnings.map((warning) => warning.positionId)).size;
@@ -60,7 +62,7 @@ export function LvPageHeader({
           </nav>
           <div className="lv-title-line">
             <h1>LV-Vergleich</h1>
-            <span>Heizung</span>
+            <span>{disciplineLabel}</span>
           </div>
         </div>
       </div>

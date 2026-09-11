@@ -97,6 +97,9 @@ async function createLvFixture(page: Page) {
   await expect(page.locator("[data-processing-result]")).toBeVisible({ timeout: 30_000 });
   await page.getByRole("link", { name: /LV-Vergleich öffnen/u }).click();
   await expect(page.locator("[data-real-lv-workspace]")).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator('[data-lv-design="v2"][data-real-lv-workspace]')).toBeVisible();
+  await expect(page.locator(".wb-app-frame")).toHaveAttribute("data-lv-design", "v2");
+  await expect(page.locator("[data-real-lv-workspace]")).toHaveClass(/lv-workspace--quiet/);
   await expect(page.locator('[data-lv-position="1.1.10"]')).toBeVisible();
   await page.locator('[data-lv-position="1.1.10"]').click();
   await expect(page.locator("[data-persistent-inspector]")).toBeVisible();
@@ -333,6 +336,10 @@ test("LV v2 keeps comparison and evidence readable on standard screens", async (
   await navigatorList.evaluate((element) => { element.scrollTop = 240; });
   await expect.poll(() => navigatorList.evaluate((element) => element.scrollTop)).toBe(240);
   await page.reload();
+  await expect(page.locator('[data-lv-design="v2"][data-real-lv-workspace]')).toBeVisible();
+  await expect(page.locator(".wb-app-frame")).toHaveAttribute("data-lv-design", "v2");
+  await expect(page.locator("[data-real-lv-workspace]")).toHaveClass(/lv-workspace--quiet/);
+  await expectDesktopGeometry(page);
   await expect(selection).toHaveAttribute("aria-pressed", "true", { timeout: 20_000 });
   await expect(source).toHaveAttribute("data-source-key", selectedSourceKey ?? "");
   await expect.poll(() => navigatorList.evaluate((element) => element.scrollTop)).toBe(240);

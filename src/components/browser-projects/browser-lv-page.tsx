@@ -18,6 +18,7 @@ import {
 } from "@/browser-projects/browser-export";
 import type {
   BrowserAnalysisSnapshot,
+  BrowserDiscipline,
   BrowserProjectRecord,
   BrowserSelectionRecord
 } from "@/browser-projects/types";
@@ -27,6 +28,14 @@ import { useDecisionIdentity } from "@/components/decision-identity";
 import { ThemeControl } from "@/components/theme-control";
 
 const BROWSER_OPERATOR_ID = "00000000-0000-4000-8000-000000000001";
+
+const DISCIPLINE_LABEL: Record<BrowserDiscipline, string> = {
+  HEIZUNG: "Heizung",
+  SANITAER: "Sanitär",
+  INSTALLATIONSSYSTEME: "Installationssysteme",
+  MULTI: "Heizung / Sanitär",
+  UNKNOWN: "LV"
+};
 
 export function normalizeBrowserWorkspaceState(value: unknown): ProjectWorkspaceState {
   return ProjectWorkspaceStateSchema.parse(value);
@@ -355,14 +364,22 @@ export function BrowserLvPage({ projectId }: { projectId: string }) {
   );
 
   if (error) {
-    return <main className="browser-workflow-page browser-project-error">{error}</main>;
+    return (
+      <main className="browser-workflow-page browser-project-error" data-lv-design="v2">
+        {error}
+      </main>
+    );
   }
   if (!project || !analysis || !adapter) {
-    return <main className="browser-workflow-page">LV-Vergleich wird geladen …</main>;
+    return (
+      <main className="browser-workflow-page" data-lv-design="v2">
+        LV-Vergleich wird geladen …
+      </main>
+    );
   }
 
   return (
-    <main className="browser-lv-project" data-browser-local-lv>
+    <main className="browser-lv-project" data-browser-local-lv data-lv-design="v2">
       <LvComparisonPage
         pilot={analysis.pilot}
         reload={reload}
@@ -372,6 +389,7 @@ export function BrowserLvPage({ projectId }: { projectId: string }) {
           onBack: () => void leaveForRoute("/projects"),
           onDocuments: () => void leaveForRoute(`/projects/${projectId}/documents/review`),
           onAddDocuments: () => setAddFilesOpen(true),
+          disciplineLabel: DISCIPLINE_LABEL[project.activeDiscipline ?? "HEIZUNG"],
           utilityActions: (
             <>
               <ThemeControl />

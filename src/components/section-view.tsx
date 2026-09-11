@@ -1840,8 +1840,6 @@ function Comparison() {
   if (pilot === undefined) return <div className="panel loading-panel">Quelldaten werden geladen…</div>;
   return pilot === null ? (
     <SyntheticComparison />
-  ) : process.env.NEXT_PUBLIC_LEGACY_LV_UI === "true" ? (
-    <RealComparison pilot={pilot} reload={reload} />
   ) : (
     <LvComparisonPage pilot={pilot} reload={reload} />
   );
