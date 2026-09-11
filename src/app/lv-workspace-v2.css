@@ -1672,10 +1672,10 @@ html[data-theme="dark"] .lv-workspace--quiet .lv-inline-source > header {
 .lv-workspace--quiet .lv-three-pane .lv-position-list-head { display: flex; justify-content: space-between; padding: 0 17px; font-size: 13px; }
 .lv-workspace--quiet .lv-three-pane .lv-position-list { padding: 0 8px 10px; background: transparent; }
 .lv-workspace--quiet .lv-three-pane .lv-list-section-row { min-height: 36px; padding: 8px 5px; gap: 5px; font-size: 10px; background: transparent; }
-.lv-workspace--quiet .lv-three-pane .lv-list-section-row strong { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lv-workspace--quiet .lv-three-pane .lv-list-section-row strong { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
 .lv-workspace--quiet .lv-three-pane .lv-list-section-row > svg:first-child { display: none; }
 .lv-workspace--quiet .lv-three-pane .lv-position-card { border: 1px solid transparent; border-radius: 8px; background: transparent; margin: 4px 0; box-shadow: none; }
-.lv-workspace--quiet .lv-three-pane .lv-position-card.active { background: var(--lv2-navy-soft); border-color: #b9d7f9; }
+.lv-workspace--quiet .lv-three-pane .lv-position-card.active { background: var(--lv2-navy-soft); border-color: color-mix(in srgb, var(--lv2-navy) 42%, var(--lv2-line)); }
 .wb-app-frame[data-lv-workspace="true"] .lv-workspace--quiet .lv-three-pane.lv-two-pane .lv-position-card.collapsed .lv-position-card-header { display: grid; grid-template-columns: minmax(0,1fr); gap: 8px; padding: 12px 11px; min-height: 108px; background: transparent; border: 0; }
 .lv-workspace--quiet .lv-three-pane .lv-position-primary { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; padding: 0; min-width: 0; }
 .lv-workspace--quiet .lv-three-pane .lv-position-number { color: var(--lv2-muted); font-size: 11px; font-weight: 500; }
@@ -1710,7 +1710,7 @@ html[data-theme="dark"] .lv-workspace--quiet .lv-inline-source > header {
 .lv-workspace--quiet .lv-three-pane .lv-offer-table { display: grid; gap: 12px; overflow: visible; max-height: none; }
 .lv-workspace--quiet .lv-three-pane .lv-offer-table-head { display: none; }
 .lv-workspace--quiet .lv-three-pane .lv-offer-row { display: grid; grid-template-columns: minmax(0,1fr) auto; min-width: 0; padding: 16px; margin: 0; border: 1px solid var(--lv2-line); border-radius: 9px; gap: 12px; align-items: start; cursor: pointer; background: var(--lv2-surface); }
-.lv-workspace--quiet .lv-three-pane .lv-offer-row.active { background: var(--lv2-navy-soft); border-color: #a8cfff; }
+.lv-workspace--quiet .lv-three-pane .lv-offer-row.active { background: var(--lv2-navy-soft); border-color: color-mix(in srgb, var(--lv2-navy) 48%, var(--lv2-line)); }
 .lv-workspace--quiet .lv-three-pane .lv-offer-row.selected { box-shadow: inset 3px 0 var(--lv2-green); }
 .lv-workspace--quiet .lv-three-pane .lv-offer-supplier { grid-column: 1 / -1; padding: 0; gap: 9px; min-width: 0; display: flex; flex-direction: row; flex-wrap: nowrap; justify-content: flex-start; }
 .lv-workspace--quiet .lv-three-pane .lv-offer-supplier > span { flex: 1; min-width: 0; }
@@ -1759,17 +1759,23 @@ html[data-theme="dark"] .lv-workspace--quiet .lv-inline-source > header {
 .lv-workspace--quiet .lv-three-pane .lv-source-select select { width: 100%; max-width: 100%; font: inherit; font-size: 12px; padding: 8px; color: var(--lv2-text); background: var(--lv2-surface-soft); border: 1px solid var(--lv2-line); border-radius: 7px; }
 .lv-workspace--quiet .lv-three-pane .lv-inline-source > header nav { flex-wrap: wrap; overflow: visible; justify-content: flex-start; gap: 5px; }
 .lv-workspace--quiet .lv-three-pane .lv-inline-source > header button { min-height: 29px; font-size: 11px; padding: 0 7px; border-radius: 6px; }
-.lv-workspace--quiet .lv-three-pane .lv-inline-source > header button[aria-pressed="true"] { background: var(--lv2-navy-soft); color: var(--lv2-navy); border-color: #a8cfff; }
+.lv-workspace--quiet .lv-three-pane .lv-inline-source > header button[aria-pressed="true"] { background: var(--lv2-navy-soft); color: var(--lv2-navy); border-color: color-mix(in srgb, var(--lv2-navy) 48%, var(--lv2-line)); }
 .lv-workspace--quiet .lv-three-pane .lv-inline-source-stage { padding: 5px; }
 .lv-workspace--quiet .lv-three-pane .lv-inline-source-stage .source-pdf-stage { padding: 3px; }
 .lv-workspace--quiet .lv-three-pane .source-evidence-status { font-size: 10px; padding: 7px 10px; }
 .wb-app-frame[data-lv-workspace="true"] .wb-sidebar { background: #f4f4f2; color: #62696c; border-right: 1px solid #e7e8e7; }
 .wb-app-frame[data-lv-workspace="true"] .wb-navigation a { color: #62696c; }
-.wb-app-frame[data-lv-workspace="true"] .wb-navigation a.active { color: #1678e8; background: #fff; border-color: #e7e8e7; }
+.wb-app-frame[data-lv-workspace="true"] .wb-navigation a.active { color: #1678e8; background: var(--lv2-surface, #fff); border-color: #e7e8e7; }
 .wb-app-frame[data-lv-workspace="true"] .wb-spine-label { display: none; }
-html[data-theme="dark"] .wb-app-frame[data-lv-workspace="true"] .wb-sidebar { background: #1c1e20; border-color: #393e42; }
+html[data-theme="dark"] .wb-app-frame[data-lv-workspace="true"] .wb-sidebar { background: #1c1e20; color: #b0b7bc; border-color: #393e42; }
 html[data-theme="dark"] .wb-app-frame[data-lv-workspace="true"] .wb-navigation a { color: #b0b7bc; }
 html[data-theme="dark"] .wb-app-frame[data-lv-workspace="true"] .wb-navigation a.active { color: #7db9ff; background: #2b2e31; border-color: #393e42; }
+html[data-theme="dark"] .wb-app-frame[data-lv-workspace="true"] .wb-brand-product strong,
+html[data-theme="dark"] .wb-app-frame[data-lv-workspace="true"] .wb-brand-product small,
+html[data-theme="dark"] .wb-app-frame[data-lv-workspace="true"] .wb-sidebar-footer p,
+html[data-theme="dark"] .wb-app-frame[data-lv-workspace="true"] .wb-workspace-nav-toggle {
+  color: #b0b7bc;
+}
 @media (min-width:1750px) {
   .wb-app-frame[data-lv-workspace="true"] .lv-workspace--quiet .lv-three-pane.lv-two-pane,
   .wb-app-frame[data-lv-workspace="true"] .lv-workspace--quiet .lv-three-pane.lv-two-pane.details-open { grid-template-columns: 250px minmax(500px,1fr) minmax(570px,1.15fr); }
@@ -1794,6 +1800,55 @@ html[data-theme="dark"] .wb-app-frame[data-lv-workspace="true"] .wb-navigation a
   .lv-workspace--quiet .lv-three-pane .lv-list-pane { grid-row: 1 / 3; }
   .lv-workspace--quiet .lv-three-pane .lv-inspector-source { grid-column: 2; grid-row: 2; min-height: 340px; }
   .lv-workspace--quiet .lv-three-pane .lv-details-placeholder { grid-column: 2; grid-row: 1 / 3; }
+}
+
+/* Dark must win over the approved light token block above. */
+html[data-theme="dark"] .lv-workspace--quiet {
+  --lv2-bg: #121416;
+  --lv2-surface: #1a1d20;
+  --lv2-surface-soft: #1f2326;
+  --lv2-surface-hover: #262b2f;
+  --lv2-line: #343a3f;
+  --lv2-line-strong: #4a5157;
+  --lv2-text: #f2f4f5;
+  --lv2-muted: #9aa3a9;
+  --lv2-navy: #7db9ff;
+  --lv2-navy-soft: #1a2a3d;
+  --lv2-yellow: #f0c500;
+  --lv2-yellow-soft: #332d15;
+  --lv2-green: #70c49e;
+  --lv2-green-soft: #172d25;
+  --lv2-amber: #f0bd58;
+  --lv2-amber-soft: #302819;
+  --lv2-danger: #ee8b8b;
+  color-scheme: dark;
+}
+html[data-theme="dark"] .lv-workspace--quiet .lv-three-pane .lv-position-card.active {
+  border-color: #3d5f86;
+}
+html[data-theme="dark"] .lv-workspace--quiet .lv-three-pane .lv-offer-row.active {
+  border-color: #3d5f86;
+}
+html[data-theme="dark"] .lv-workspace--quiet .lv-three-pane .lv-inline-source > header button[aria-pressed="true"] {
+  border-color: #3d5f86;
+}
+html[data-theme="dark"] .lv-workspace--quiet .lv-three-pane .lv-list-pane,
+html[data-theme="dark"] .lv-workspace--quiet .lv-three-pane .lv-details-pane,
+html[data-theme="dark"] .lv-workspace--quiet .lv-three-pane .lv-inspector-source,
+html[data-theme="dark"] .lv-workspace--quiet .lv-three-pane .lv-offer-row,
+html[data-theme="dark"] .lv-workspace--quiet .lv-three-pane .lv-inspector-detail-drawer,
+html[data-theme="dark"] .lv-workspace--quiet .lv-page-header,
+html[data-theme="dark"] .lv-workspace--quiet .lv-toolbar {
+  background: var(--lv2-surface);
+  color: var(--lv2-text);
+  border-color: var(--lv2-line);
+}
+html[data-theme="dark"] .lv-workspace--quiet .lv-three-pane .lv-list-pane,
+html[data-theme="dark"] .lv-workspace--quiet .lv-three-pane .lv-inspector-basis-bar {
+  background: var(--lv2-surface-soft);
+}
+html[data-theme="dark"] .lv-workspace--quiet .lv-three-pane .lv-inline-source-stage {
+  background: #0c1116;
 }
 
 /* Design lock: v2 three-pane must win over legacy globals regardless of CSS chunk order. */

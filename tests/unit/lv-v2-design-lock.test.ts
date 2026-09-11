@@ -47,6 +47,18 @@ describe("LV v2 design lock", () => {
     );
   });
 
+  it("keeps dark theme tokens after the approved light three-pane overrides", () => {
+    const approved = v2Css.indexOf("/* Approved working layout:");
+    const darkAfter = v2Css.indexOf(
+      "/* Dark must win over the approved light token block above. */"
+    );
+    expect(approved).toBeGreaterThan(-1);
+    expect(darkAfter).toBeGreaterThan(approved);
+    expect(v2Css).toContain(
+      'html[data-theme="dark"] .lv-workspace--quiet .lv-three-pane .lv-offer-row'
+    );
+  });
+
   it("routes the global comparison URL away from the synthetic table", () => {
     const page = readFileSync("src/app/[section]/page.tsx", "utf8");
     expect(page).toContain("localCorpusEnabled()");
