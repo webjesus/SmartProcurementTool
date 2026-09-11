@@ -136,7 +136,11 @@ export function ProjectsPage() {
   }, [projects, search, sort]);
 
   async function openProject(project: BrowserProjectRecord) {
-    await service.openProject(project.projectId);
+    try {
+      await service.openProject(project.projectId);
+    } catch {
+      // Navigation still proceeds; open timestamp is best-effort.
+    }
     router.push(projectHref(project));
   }
 
@@ -220,28 +224,6 @@ export function ProjectsPage() {
     await reload();
   }
 
-  function cardClick(
-    event: React.MouseEvent<HTMLElement>,
-    project: BrowserProjectRecord
-  ) {
-    const target = event.target as HTMLElement;
-    if (target.closest("button, a, input, select, textarea, [role='menu']")) {
-      return;
-    }
-    if (window.getSelection()?.toString()) return;
-    void openProject(project);
-  }
-
-  function cardKeyDown(
-    event: React.KeyboardEvent<HTMLElement>,
-    project: BrowserProjectRecord
-  ) {
-    if (event.key !== "Enter" && event.key !== " ") return;
-    if ((event.target as HTMLElement).closest("button, a, [role='menu']")) return;
-    event.preventDefault();
-    void openProject(project);
-  }
-
   return (
     <div className="projects-page" data-browser-projects data-project-view={view.toLowerCase()}>
       <header className="projects-header">
@@ -319,16 +301,16 @@ export function ProjectsPage() {
             className="browser-project-card"
             key={project.projectId}
             data-project-id={project.projectId}
-            role="link"
-            tabIndex={0}
-            aria-label={`${project.name} öffnen`}
-            onClick={(event) => cardClick(event, project)}
-            onKeyDown={(event) => cardKeyDown(event, project)}
+            data-status={project.status}
+            data-document-count={project.documentCount}
           >
-            <button
+            <Link
               className="project-card-open"
-              onClick={() => void openProject(project)}
+              href={projectHref(project)}
               aria-label={`${project.name} öffnen`}
+              onClick={() => {
+                void service.openProject(project.projectId).catch(() => undefined);
+              }}
             >
               <ProjectIllustration
                 illustrationId={project.illustrationId}
@@ -337,8 +319,11 @@ export function ProjectsPage() {
               <span className="project-card-title">
                 <strong>{project.name}</strong>
                 {project.objectDescription ? <small>{project.objectDescription}</small> : null}
+                {project.documentCount === 0 ? (
+                  <small>Entwurf · Dateien hinzufügen, um fortzufahren</small>
+                ) : null}
               </span>
-            </button>
+            </Link>
             <div className="project-menu">
               <button
                 onClick={() =>
@@ -353,7 +338,8 @@ export function ProjectsPage() {
               {openMenu === project.projectId ? (
                 <div role="menu">
                   <button onClick={() => void openProject(project)}>
-                    <ArrowRight size={15} /> Öffnen
+                    <ArrowRight size={15} />{" "}
+                    {project.documentCount === 0 ? "Entwurf fortsetzen" : "Öffnen"}
                   </button>
                   <button onClick={() => beginEdit(project)}>
                     <Pencil size={15} /> Umbenennen
@@ -399,10 +385,22 @@ export function ProjectsPage() {
               <div><dt>Zuletzt bearbeitet</dt><dd>{date(project.updatedAt, true)}</dd></div>
               <div><dt>Erstellt am</dt><dd>{date(project.createdAt)}</dd></div>
             </dl>
-            <span className={`project-status status-${projectDisplayStatus(project).toLocaleLowerCase("de")}`}>
-              {projectDisplayStatus(project) === "BEREIT" ? <CheckCircle2 size={16} /> : <Clock3 size={16} />}
-              {statusLabels[projectDisplayStatus(project)]}
-            </span>
+            <div className="project-card-footer">
+              <span className={`project-status status-${projectDisplayStatus(project).toLocaleLowerCase("de")}`}>
+                {projectDisplayStatus(project) === "BEREIT" ? <CheckCircle2 size={16} /> : <Clock3 size={16} />}
+                {statusLabels[projectDisplayStatus(project)]}
+              </span>
+              <Link
+                className="project-open-cta"
+                href={projectHref(project)}
+                onClick={() => {
+                  void service.openProject(project.projectId).catch(() => undefined);
+                }}
+              >
+                {project.documentCount === 0 ? "Entwurf fortsetzen" : "Öffnen"}
+                <ArrowRight size={15} />
+              </Link>
+            </div>
           </article>
         ))}
         {view === "GRID" ? (

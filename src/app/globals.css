@@ -5013,7 +5013,6 @@ tbody tr:hover { background: #fafcff; }
   display: grid;
   grid-template-rows: auto auto auto 1fr;
   box-shadow: 0 1px 2px rgb(18 38 69 / 2%);
-  cursor: pointer;
 }
 .browser-project-card:hover {
   border-color: #b8c9e6;
@@ -5035,6 +5034,7 @@ tbody tr:hover { background: #fafcff; }
   color: inherit;
   background: transparent;
   cursor: pointer;
+  text-decoration: none;
 }
 .project-illustration {
   width: 98px;
@@ -5162,9 +5162,16 @@ tbody tr:hover { background: #fafcff; }
   color: #14213a;
   font-weight: 600;
 }
+.project-card-footer {
+  margin-top: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
 .project-status {
   width: max-content;
-  margin-top: 18px;
+  margin-top: 0;
   padding: 6px 10px;
   border-radius: 6px;
   display: inline-flex;
@@ -5173,6 +5180,23 @@ tbody tr:hover { background: #fafcff; }
   color: #05713f;
   background: #e8f7ef;
   font-weight: 700;
+}
+.project-open-cta {
+  min-height: 34px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 7px;
+  color: #fff;
+  background: var(--wb-navy, #1678e8);
+  font-size: 12px;
+  font-weight: 650;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.project-open-cta:hover {
+  filter: brightness(0.96);
 }
 .project-status.status-entwurf {
   color: #a66108;
@@ -5602,6 +5626,12 @@ tbody tr:hover { background: #fafcff; }
   color: #9aa5b6;
   background: #e9edf3;
   cursor: not-allowed;
+}
+.new-project-footer-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
 }
 
 @media (max-width: 1260px) {

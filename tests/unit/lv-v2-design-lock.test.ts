@@ -59,6 +59,15 @@ describe("LV v2 design lock", () => {
     );
   });
 
+  it("loads quiet shell styles between globals and LV v2", () => {
+    expect(layout.indexOf('import "./quiet-shell.css"')).toBeGreaterThan(
+      layout.indexOf('import "./globals.css"')
+    );
+    expect(layout.indexOf('import "./lv-workspace-v2.css"')).toBeGreaterThan(
+      layout.indexOf('import "./quiet-shell.css"')
+    );
+  });
+
   it("routes the global comparison URL away from the synthetic table", () => {
     const page = readFileSync("src/app/[section]/page.tsx", "utf8");
     expect(page).toContain("localCorpusEnabled()");

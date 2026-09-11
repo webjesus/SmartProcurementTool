@@ -505,9 +505,28 @@ export function NewProjectPage({ limits }: { limits: BrowserUploadLimits }) {
       {error ? <p className="browser-project-error" role="alert">{error}</p> : null}
       <footer className="new-project-footer">
         <Link href="/projects">Abbrechen</Link>
-        <button disabled={!ready} onClick={() => void continueToReview()}>
-          Weiter: Dateien prüfen <ArrowRight size={17} />
-        </button>
+        <div className="new-project-footer-actions">
+          {!ready ? (
+            <p className="project-continue-hint" data-tone="warn">
+              {documents.length === 0
+                ? "Laden Sie mindestens eine PDF-Datei hoch, um fortzufahren."
+                : uploading
+                  ? "Dokumente werden noch verarbeitet …"
+                  : "Pflichtfelder und Dateien müssen bereit sein."}
+            </p>
+          ) : null}
+          <button
+            disabled={!ready}
+            title={
+              ready
+                ? undefined
+                : "Bitte Projektdaten ausfüllen und mindestens eine PDF-Datei hochladen."
+            }
+            onClick={() => void continueToReview()}
+          >
+            Weiter: Dateien prüfen <ArrowRight size={17} />
+          </button>
+        </div>
       </footer>
 
       {removeCandidate ? (

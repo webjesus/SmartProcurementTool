@@ -6,6 +6,7 @@ import { isBrowserLocal } from "@/services/deployment-profile";
 import { THEME_BOOTSTRAP_SCRIPT } from "@/ui/theme";
 import "@fontsource-variable/inter";
 import "./globals.css";
+import "./quiet-shell.css";
 import "./lv-workspace-v2.css";
 
 export const metadata: Metadata = {

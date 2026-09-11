@@ -136,10 +136,11 @@ export function AppShell({
   return (
     <div
       className="wb-app-frame"
-      data-mobile-nav={mobileNavigation}
+      data-mobile-nav={mobileNavigation ? "true" : "false"}
       data-workspace-nav={workspaceNavigation}
       data-lv-workspace={lvWorkspace ? "true" : "false"}
-      data-lv-design={lvWorkspace ? "v2" : undefined}
+      data-quiet-shell="true"
+      data-lv-design={lvWorkspace ? "v2" : "shell"}
     >
       <aside className="wb-sidebar">
         <div className="wb-brand-block">

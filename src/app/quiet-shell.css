@@ -1,0 +1,145 @@
+/* Quiet product shell — same visual language as approved LV three-pane. */
+:root,
+html[data-theme="light"] {
+  --wb-navy: #1678e8;
+  --wb-navy-strong: #0d5fc0;
+  --wb-navy-soft: #edf5ff;
+  --wb-yellow: #f4c400;
+  --wb-yellow-strong: #d9ad00;
+  --wb-bg: #f4f4f2;
+  --wb-surface: #ffffff;
+  --wb-surface-raised: #ffffff;
+  --wb-surface-muted: #f8f8f7;
+  --wb-line: #e7e8e7;
+  --wb-line-strong: #cbd3dc;
+  --wb-text: #222528;
+  --wb-text-muted: #697175;
+  --wb-shadow: 0 10px 28px rgb(22 35 50 / 6%);
+}
+
+html[data-theme="dark"] {
+  --wb-navy: #7db9ff;
+  --wb-navy-strong: #a8d0ff;
+  --wb-navy-soft: #1a2a3d;
+  --wb-bg: #121416;
+  --wb-surface: #1a1d20;
+  --wb-surface-raised: #22262a;
+  --wb-surface-muted: #1f2326;
+  --wb-line: #343a3f;
+  --wb-line-strong: #4a5157;
+  --wb-text: #f2f4f5;
+  --wb-text-muted: #9aa3a9;
+  --wb-shadow: 0 12px 32px rgb(0 0 0 / 35%);
+}
+
+.wb-sidebar {
+  color: var(--wb-text-muted);
+  background: var(--wb-bg);
+  border-right: 1px solid var(--wb-line);
+  box-shadow: none;
+}
+
+.wb-brand-block {
+  border-bottom: 1px solid var(--wb-line);
+}
+
+.wb-brand-product strong {
+  color: var(--wb-text);
+}
+
+.wb-brand-product small {
+  color: var(--wb-text-muted);
+}
+
+.wb-spine-label strong {
+  color: var(--wb-text);
+}
+
+.wb-spine-label small {
+  color: var(--wb-text-muted);
+}
+
+.wb-nav-heading {
+  color: var(--wb-text-muted);
+}
+
+.wb-navigation a {
+  color: var(--wb-text-muted);
+}
+
+.wb-navigation a:hover {
+  color: var(--wb-text);
+  background: var(--wb-surface);
+  border-color: var(--wb-line);
+}
+
+.wb-navigation a.active {
+  color: var(--wb-navy);
+  background: var(--wb-surface);
+  border-color: var(--wb-line);
+}
+
+.wb-navigation a.active::before {
+  background: var(--wb-navy);
+}
+
+.wb-navigation a[href="/projects/new"] svg:last-child {
+  color: var(--wb-navy);
+}
+
+.wb-sidebar-footer > a {
+  color: var(--wb-text);
+  background: var(--wb-surface);
+  border: 1px solid var(--wb-line);
+}
+
+.wb-sidebar-footer > a small {
+  color: var(--wb-text-muted);
+}
+
+.wb-sidebar-footer > p {
+  color: var(--wb-text-muted);
+}
+
+.wb-workspace-nav-toggle {
+  color: var(--wb-text-muted);
+  background: var(--wb-surface);
+  border: 1px solid var(--wb-line);
+  box-shadow: none;
+}
+
+.wb-topbar {
+  background: color-mix(in srgb, var(--wb-surface) 92%, transparent);
+  border-bottom: 1px solid var(--wb-line);
+}
+
+.projects-primary-action,
+.new-project-footer > button:not(:disabled),
+.browser-primary-button {
+  background: var(--wb-navy) !important;
+  border-color: var(--wb-navy) !important;
+}
+
+.new-project-footer > button:disabled {
+  color: var(--wb-text-muted);
+  background: var(--wb-surface-muted);
+  border: 1px solid var(--wb-line);
+}
+
+.project-continue-hint {
+  margin: 0 0 10px;
+  color: var(--wb-text-muted);
+  font-size: 12px;
+}
+
+.project-continue-hint[data-tone="warn"] {
+  color: #8f5700;
+}
+
+html[data-theme="dark"] .project-continue-hint[data-tone="warn"] {
+  color: #f0bd58;
+}
+
+.browser-project-card[data-status="ENTWURF"] .project-card-open {
+  outline: 1px dashed var(--wb-line-strong);
+}
