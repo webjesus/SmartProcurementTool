@@ -14,17 +14,20 @@ describe("self-hosted browser PDF.js assets", () => {
     configureBrowserPdfJs(pdfjs);
 
     expect(pdfjs.GlobalWorkerOptions.workerSrc).toBe(BROWSER_PDFJS_WORKER_URL);
-    expect(pdfjs.GlobalWorkerOptions.workerSrc).toBe("/api/local/pdf-worker");
+    expect(pdfjs.GlobalWorkerOptions.workerSrc).toBe("/pdfjs/pdf.worker.min.mjs");
     expect(browserPdfLoadingOptions(new Uint8Array([1, 2, 3]))).toMatchObject({
-      wasmUrl: BROWSER_PDFJS_WASM_URL
+      wasmUrl: BROWSER_PDFJS_WASM_URL,
+      isEvalSupported: false,
+      useSystemFonts: true
     });
     expect(BROWSER_PDFJS_WASM_URL).toBe("/pdfjs/wasm/");
     expect(BROWSER_PDFJS_WASM_URL).not.toMatch(/^https?:/u);
   });
 
-  it("ships the JBIG2 decoder, fallback, manifest and license locally", async () => {
+  it("ships the JBIG2 decoder, worker, fallback, manifest and license locally", async () => {
     const root = path.resolve(process.cwd(), "public", "pdfjs");
     const requiredFiles = [
+      "pdf.worker.min.mjs",
       "wasm/jbig2.wasm",
       "wasm/jbig2_nowasm_fallback.js",
       "wasm/LICENSE_JBIG2",

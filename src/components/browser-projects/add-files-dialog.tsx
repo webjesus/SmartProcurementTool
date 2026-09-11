@@ -95,7 +95,14 @@ export function AddFilesDialog({
           <ul>
             {items.map((item, index) => (
               <li key={`${item.fileName}:${index}`} data-upload-status={item.status}>
-                <FileText size={15} /> {item.fileName} · {item.message}
+                <FileText size={15} /> {item.fileName} ·{" "}
+                {item.message === "INVALID_PDF"
+                  ? "PDF konnte nicht gelesen werden."
+                  : item.message === "PDF_WORKER_UNAVAILABLE"
+                    ? "PDF-Verarbeitung vorübergehend nicht verfügbar."
+                    : item.message === "UNSUPPORTED_PDF"
+                      ? "Nur gültige PDF-Dateien werden unterstützt."
+                      : item.message}
               </li>
             ))}
           </ul>

@@ -8,6 +8,10 @@ const outputRoot = path.join(root, "public", "pdfjs");
 const expectedVersion = "6.3.289";
 
 const assets = [
+  [
+    "node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs",
+    "pdf.worker.min.mjs"
+  ],
   ["node_modules/pdfjs-dist/wasm/jbig2.wasm", "wasm/jbig2.wasm"],
   ["node_modules/pdfjs-dist/wasm/jbig2_nowasm_fallback.js", "wasm/jbig2_nowasm_fallback.js"],
   ["node_modules/pdfjs-dist/wasm/openjpeg.wasm", "wasm/openjpeg.wasm"],

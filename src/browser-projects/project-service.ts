@@ -535,15 +535,21 @@ async function documentFromFile(
 ): Promise<{ document: BrowserDocumentRecord; bytes: Uint8Array }> {
   const buffer = await file.arrayBuffer();
   const bytes = new Uint8Array(buffer);
-  if (
-    file.type !== "application/pdf" ||
-    new TextDecoder("ascii").decode(bytes.subarray(0, 5)) !== "%PDF-"
-  ) {
+  const magic = new TextDecoder("ascii").decode(bytes.subarray(0, 5));
+  const mimeOk =
+    file.type === "application/pdf" ||
+    file.type === "application/octet-stream" ||
+    file.type === "";
+  const nameOk = /\.pdf$/i.test(file.name);
+  if (!mimeOk || magic !== "%PDF-" || !nameOk) {
     throw new Error("UNSUPPORTED_PDF");
   }
+  // Upload classification must stay fast and worker-safe. Full OCR runs later
+  // in processing / explicit OCR actions — enabling it here breaks deploys when
+  // the worker/wasm path is cold or unavailable.
   const [checksum, inspection] = await Promise.all([
     sha256(buffer),
-    inspectBrowserPdf(bytes, { enableOcr: true, maxOcrPages: 3 })
+    inspectBrowserPdf(bytes, { enableOcr: false })
   ]);
   const classification = classifyBrowserDocumentContent({
     fileName: file.name,
@@ -555,7 +561,7 @@ async function documentFromFile(
       projectId,
       documentId,
       originalFileName: file.name,
-      mimeType: file.type,
+      mimeType: file.type || "application/pdf",
       size: file.size,
       sha256: checksum,
       uploadedAt: new Date().toISOString(),

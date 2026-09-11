@@ -9,7 +9,11 @@ import {
   shouldRunBrowserOcr,
   summarizeBrowserOcr
 } from "@/browser-projects/ocr-fallback";
-import { browserPdfLoadingOptions, configureBrowserPdfJs } from "@/pdf/browser-pdfjs-config";
+import {
+  browserPdfLoadingOptions,
+  configureBrowserPdfJs,
+  copyPdfBytes
+} from "@/pdf/browser-pdfjs-config";
 
 export type BrowserPdfInspectionOptions = {
   enableOcr?: boolean;
@@ -35,15 +39,27 @@ function sampledPages(pageCount: number): number[] {
   return [...pages].sort((left, right) => left - right);
 }
 
+async function loadPdfDocument(bytes: Uint8Array) {
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  if (typeof window !== "undefined") configureBrowserPdfJs(pdfjs);
+  const loadingTask = pdfjs.getDocument(
+    browserPdfLoadingOptions(copyPdfBytes(bytes))
+  );
+  try {
+    const pdf = await loadingTask.promise;
+    return { pdfjs, loadingTask, pdf };
+  } catch (error) {
+    await loadingTask.destroy().catch(() => undefined);
+    throw error;
+  }
+}
+
 export async function inspectBrowserPdf(
   bytes: Uint8Array,
   options: BrowserPdfInspectionOptions = {}
 ): Promise<BrowserPdfInspection> {
   try {
-    const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-    if (typeof window !== "undefined") configureBrowserPdfJs(pdfjs);
-    const loadingTask = pdfjs.getDocument(browserPdfLoadingOptions(bytes.slice()));
-    const pdf = await loadingTask.promise;
+    const { pdfjs, loadingTask, pdf } = await loadPdfDocument(bytes);
     const metadata = await pdf
       .getMetadata()
       .then((value) => value.info as Record<string, unknown>)
@@ -124,7 +140,15 @@ export async function inspectBrowserPdf(
         ? ocrConfidences.reduce((sum, value) => sum + value, 0) / ocrConfidences.length
         : null
     };
-  } catch {
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    if (
+      /worker|Failed to fetch|Loading.*worker|Dynamic import|wasm|Setting up fake worker/i.test(
+        detail
+      )
+    ) {
+      throw new Error("PDF_WORKER_UNAVAILABLE");
+    }
     throw new Error("INVALID_PDF");
   }
 }

@@ -67,9 +67,16 @@ const errorLabels: Record<string, string> = {
   NOT_ENOUGH_BROWSER_STORAGE: "Nicht genügend Browserspeicher.",
   FILE_TOO_LARGE: "Eine Datei überschreitet die zulässige Größe.",
   UNSUPPORTED_PDF: "Nur gültige, unverschlüsselte PDF-Dateien werden unterstützt.",
+  INVALID_PDF: "PDF konnte nicht gelesen werden. Datei prüfen oder erneut hochladen.",
+  PDF_WORKER_UNAVAILABLE:
+    "PDF-Verarbeitung ist vorübergehend nicht verfügbar. Seite neu laden und erneut versuchen.",
   DUPLICATE_PDF: "Diese PDF ist im Projekt bereits vorhanden.",
   TOO_MANY_PAGES: "Die maximale Gesamtseitenzahl wurde überschritten."
 };
+
+function uploadResultLabel(message: string): string {
+  return errorLabels[message] ?? message;
+}
 
 function formatBytes(value: number): string {
   if (value < 1024 * 1024) return `${Math.max(1, Math.round(value / 1024))} KB`;
@@ -452,7 +459,7 @@ export function NewProjectPage({ limits }: { limits: BrowserUploadLimits }) {
                     key={`${item.fileName}:${index}`}
                     data-upload-status={item.status}
                   >
-                    {item.fileName}: {item.message}
+                    {item.fileName}: {uploadResultLabel(item.message)}
                   </li>
                 ))}
               </ul>
