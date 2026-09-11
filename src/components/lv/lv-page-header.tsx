@@ -47,7 +47,7 @@ export function LvPageHeader({
             className="lv-header-back"
             disabled={projectContext.leaving}
             onClick={projectContext.onBack}
-            aria-label="Zurück zu Projekte"
+            aria-label="Zurück zu Projekten"
           >
             <ArrowLeft size={16} />
           </button>
@@ -118,10 +118,28 @@ export function LvPageHeader({
             <FileDown size={16} /> Exportieren <ChevronDown size={14} />
           </summary>
           <div>
-            <button type="button" onClick={onExportExcel} disabled={!onExportExcel}>
+            <button
+              type="button"
+              onClick={onExportExcel}
+              disabled={!onExportExcel}
+              title={
+                onExportExcel
+                  ? "Excel-Export starten"
+                  : "Excel-Export in dieser Ansicht nicht verfügbar"
+              }
+            >
               Excel-Datei
             </button>
-            <button type="button" onClick={onExportPdf} disabled={!onExportPdf}>
+            <button
+              type="button"
+              onClick={onExportPdf}
+              disabled={!onExportPdf}
+              title={
+                onExportPdf
+                  ? "PDF-Bericht erstellen"
+                  : "PDF-Export in dieser Ansicht nicht verfügbar"
+              }
+            >
               PDF-Bericht
             </button>
           </div>

@@ -95,6 +95,12 @@ function PositionRow({
   const selected = operatorSelectedOption(position, decision);
   const cheapest = cheapestFoundOption(position, offerLines);
   const selectable = position.options.filter((option) => models.get(option.id)?.selectable);
+  const visibleOffers = position.options.filter((option) => {
+    const model = models.get(option.id);
+    if (!model) return false;
+    if (model.selectable) return true;
+    return model.validity === "MATCHING_REVIEW_REQUIRED";
+  });
   const explicitNoOffers = position.options.filter(
     (option) => models.get(option.id)?.validity === "EXPLICIT_NO_OFFER"
   );
@@ -151,7 +157,7 @@ function PositionRow({
             {shortDescription(basisDisplayLabel, 92)}
           </span>
           <small>
-            {selectable.length} {selectable.length === 1 ? "Angebot" : "Angebote"}
+            {visibleOffers.length} {visibleOffers.length === 1 ? "Angebot" : "Angebote"}
             {position.basis.verificationStatus === "HUMAN_CORRECTED" ? " · Manuell korrigiert" : ""}
           </small>
         </div>

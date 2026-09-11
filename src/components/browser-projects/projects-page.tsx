@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  ArrowLeft,
   ArrowRight,
   CheckCircle2,
   Clock3,
@@ -426,11 +425,6 @@ export function ProjectsPage() {
         <span>
           Zeige {visible.length ? 1 : 0} bis {visible.length} von {visible.length} Projekten
         </span>
-        <div>
-          <button disabled aria-label="Vorherige Seite"><ArrowLeft size={17} /></button>
-          <strong>1</strong>
-          <button disabled aria-label="Nächste Seite"><ArrowRight size={17} /></button>
-        </div>
       </footer>
 
       {editProject ? (

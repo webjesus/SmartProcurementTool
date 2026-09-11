@@ -601,6 +601,8 @@ async function documentFromFile(
 }
 
 export class BrowserProjectService {
+  private readonly addFilesChains = new Map<string, Promise<unknown>>();
+
   constructor(private readonly repositories: ProjectRepositories) {}
 
   listProjects() {
@@ -722,6 +724,30 @@ export class BrowserProjectService {
     files: readonly File[],
     limits: BrowserUploadLimits = DEFAULT_BROWSER_UPLOAD_LIMITS
   ): Promise<BrowserBatchUploadResult> {
+    const previous = this.addFilesChains.get(projectId) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const chain = previous.catch(() => undefined).then(() => gate);
+    this.addFilesChains.set(projectId, chain);
+    await previous.catch(() => undefined);
+    try {
+      return await this.addFilesUnlocked(projectId, files, limits);
+    } finally {
+      release();
+      if (this.addFilesChains.get(projectId) === chain) {
+        this.addFilesChains.delete(projectId);
+      }
+    }
+  }
+
+  private async addFilesUnlocked(
+    projectId: string,
+    files: readonly File[],
+    limits: BrowserUploadLimits
+  ): Promise<BrowserBatchUploadResult> {
+    await this.repairMissingDocumentBlobs(projectId);
     const project = await this.repositories.projects.get(projectId);
     if (!project) throw new Error("PROJECT_NOT_FOUND");
     const existing = await this.repositories.documents.list(projectId);
@@ -821,6 +847,60 @@ export class BrowserProjectService {
       items,
       documents
     };
+  }
+
+  /**
+   * Removes document rows whose PDF blob is gone when an identical SHA still
+   * has a blob in the same project. Orphans without a sibling stay listed so
+   * the operator can replace or delete them explicitly.
+   */
+  async repairMissingDocumentBlobs(projectId: string): Promise<{
+    removedDocumentIds: string[];
+    missingDocumentIds: string[];
+  }> {
+    const documents = await this.repositories.documents.list(projectId);
+    const presence = await Promise.all(
+      documents.map(async (document) => ({
+        document,
+        hasBlob: Boolean(
+          await this.repositories.documentBlobs.get(projectId, document.documentId)
+        )
+      }))
+    );
+    const shaWithBlob = new Set(
+      presence.filter((item) => item.hasBlob).map((item) => item.document.sha256)
+    );
+    const removedDocumentIds: string[] = [];
+    const missingDocumentIds: string[] = [];
+    for (const item of presence) {
+      if (item.hasBlob) continue;
+      if (shaWithBlob.has(item.document.sha256)) {
+        await this.repositories.documents.delete(projectId, item.document.documentId);
+        removedDocumentIds.push(item.document.documentId);
+      } else {
+        missingDocumentIds.push(item.document.documentId);
+      }
+    }
+    if (removedDocumentIds.length === 0) {
+      return { removedDocumentIds, missingDocumentIds };
+    }
+    const remaining = applyAutomaticBasisSelection(
+      reconcileDocumentRelations(await this.repositories.documents.list(projectId))
+    );
+    await Promise.all(remaining.map((document) => this.repositories.documents.save(document)));
+    const project = await this.repositories.projects.get(projectId);
+    if (project) {
+      await this.repositories.projects.save({
+        ...project,
+        documentCount: remaining.length,
+        supplierOfferCount: remaining.filter(
+          (item) =>
+            item.documentType === "SUPPLIER_OFFER" || item.documentType === "MANUFACTURER_OFFER"
+        ).length,
+        updatedAt: new Date().toISOString()
+      });
+    }
+    return { removedDocumentIds, missingDocumentIds };
   }
 
   listDocuments(projectId: string) {
@@ -1361,6 +1441,7 @@ export class BrowserProjectService {
     projectId: string,
     discipline: BrowserDiscipline
   ): Promise<BrowserProcessingPreflight> {
+    await this.repairMissingDocumentBlobs(projectId);
     const documents = (await this.repositories.documents.list(projectId)).filter(
       (document) => !document.excludedFromProcessing
     );

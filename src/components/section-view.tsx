@@ -660,9 +660,23 @@ function RealReview({
         <section className="document-viewer panel">
           <div className="viewer-toolbar">
             <div>
-              <button className="icon-button" disabled><ChevronLeft size={17} /></button>
+              <button
+                className="icon-button"
+                disabled
+                aria-label="Vorherige Seite"
+                title="Seitenwechsel in dieser Ansicht nicht verfügbar"
+              >
+                <ChevronLeft size={17} />
+              </button>
               <span>Seite {selected.run.document.pageNumber} / {selected.run.document.pageCount}</span>
-              <button className="icon-button" disabled><ChevronRight size={17} /></button>
+              <button
+                className="icon-button"
+                disabled
+                aria-label="Nächste Seite"
+                title="Seitenwechsel in dieser Ansicht nicht verfügbar"
+              >
+                <ChevronRight size={17} />
+              </button>
             </div>
             <div>
               <button className="icon-button" onClick={() => setZoom(Math.max(70, zoom - 10))}><ZoomOut size={17} /></button>

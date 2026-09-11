@@ -114,6 +114,9 @@ export function DocumentReviewPage({ projectId }: { projectId: string }) {
     useState<BrowserDiscipline>("HEIZUNG");
   const [preflightReasons, setPreflightReasons] = useState<string[]>([]);
   const [preflightWarnings, setPreflightWarnings] = useState<string[]>([]);
+  const [missingBlobIds, setMissingBlobIds] = useState<Set<string>>(
+    () => new Set()
+  );
   const [removeCandidate, setRemoveCandidate] =
     useState<BrowserDocumentRecord | null>(null);
   const [manualBasisCandidate, setManualBasisCandidate] =
@@ -128,12 +131,21 @@ export function DocumentReviewPage({ projectId }: { projectId: string }) {
   const replaceInput = useRef<HTMLInputElement>(null);
 
   const reload = useCallback(async () => {
+    await service.repairMissingDocumentBlobs(projectId);
     const [nextProject, nextDocuments] = await Promise.all([
       service.getProject(projectId),
       service.listDocuments(projectId)
     ]);
     setProject(nextProject);
     setDocuments(nextDocuments);
+    const missing = new Set<string>();
+    await Promise.all(
+      nextDocuments.map(async (document) => {
+        const blob = await service.getDocumentBlob(projectId, document.documentId);
+        if (!blob) missing.add(document.documentId);
+      })
+    );
+    setMissingBlobIds(missing);
     if (nextProject?.activeDiscipline) {
       setSelectedDiscipline(nextProject.activeDiscipline);
     } else {
@@ -405,6 +417,9 @@ export function DocumentReviewPage({ projectId }: { projectId: string }) {
                   <FileText size={17} />
                   <span>
                     <strong>{document.originalFileName}</strong>
+                    {missingBlobIds.has(document.documentId) ? (
+                      <span className="missing-pdf-badge">PDF fehlt — bitte ersetzen</span>
+                    ) : null}
                     {document.documentType === "BASIS_LV" ? (
                       <button
                         className={document.activeBasis ? "active-basis" : ""}
@@ -594,20 +609,30 @@ export function DocumentReviewPage({ projectId }: { projectId: string }) {
       ) : null}
       <footer className="browser-workflow-footer">
         <button onClick={() => setAddFilesOpen(true)}>Dokumente ändern</button>
-        <button
-          disabled={!valid}
-          onClick={() =>
-            void processProject().catch((processError) =>
-              setError(
-                processError instanceof Error
-                  ? processError.message
-                  : "Verarbeitung konnte nicht gestartet werden."
+        <div className="browser-workflow-footer-actions">
+          {!valid && preflightReasons.length ? (
+            <p className="browser-workflow-footer-hint" role="status">
+              {preflightReasons[0]}
+              {preflightReasons.length > 1
+                ? ` (+${preflightReasons.length - 1} weitere)`
+                : ""}
+            </p>
+          ) : null}
+          <button
+            disabled={!valid}
+            onClick={() =>
+              void processProject().catch((processError) =>
+                setError(
+                  processError instanceof Error
+                    ? processError.message
+                    : "Verarbeitung konnte nicht gestartet werden."
+                )
               )
-            )
-          }
-        >
-          Verarbeitung starten <ArrowRight size={17} />
-        </button>
+            }
+          >
+            Verarbeitung starten <ArrowRight size={17} />
+          </button>
+        </div>
       </footer>
 
       {removeCandidate ? (

@@ -212,7 +212,7 @@ export function AppShell({
         />
 
         <div className="wb-sidebar-footer">
-          <Link href="/projects">
+          <Link href="/projects" aria-label="Projektarbeitsplatz: Projekt auswählen">
             <Scale size={17} />
             <span>
               <strong>Projektarbeitsplatz</strong>

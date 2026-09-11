@@ -410,6 +410,30 @@ describe("browser-local project repositories", () => {
     expect(await service.listDocuments(project.projectId)).toHaveLength(1);
   });
 
+  it("removes orphan document rows when an identical PDF blob still exists", async () => {
+    const { service, database } = createService();
+    const project = await service.createProject("Orphan Blobs");
+    const added = await service.addFiles(project.projectId, [
+      pdf("basis-lv.pdf", [...basisLines, "Heizungsinstallation"])
+    ]);
+    const original = added.documents[0];
+    expect(original).toBeTruthy();
+    const orphanId = crypto.randomUUID();
+    await database.put("documents", {
+      ...structuredClone(original),
+      documentId: orphanId,
+      activeBasis: false
+    });
+    expect(await service.listDocuments(project.projectId)).toHaveLength(2);
+
+    const repair = await service.repairMissingDocumentBlobs(project.projectId);
+    expect(repair.removedDocumentIds).toEqual([orphanId]);
+    expect(await service.listDocuments(project.projectId)).toHaveLength(1);
+
+    const preflight = await service.processingPreflight(project.projectId, "HEIZUNG");
+    expect(preflight.blockingReasons.join(" ")).not.toContain("PDF-Datei fehlt");
+  });
+
   it("blocks processing when an obvious supplier offer is manually assigned as Basis", async () => {
     const { service } = createService();
     const project = await service.createProject("Invalid Basis");

@@ -2043,10 +2043,36 @@ tbody tr:hover { background: #fafcff; }
   justify-content: space-between;
   gap: 16px;
   margin-top: 24px;
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  padding: 12px 0 4px;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--surface, #f4f4f2) 0%, transparent),
+    var(--surface, #f4f4f2) 28%
+  );
+}
+
+.browser-workflow-footer-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.browser-workflow-footer-hint {
+  margin: 0;
+  max-width: 420px;
+  text-align: right;
+  font-size: 0.82rem;
+  line-height: 1.35;
+  color: #8a4b12;
 }
 
 .browser-workflow-footer > a,
-.browser-workflow-footer > button {
+.browser-workflow-footer > button,
+.browser-workflow-footer-actions > button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2062,17 +2088,29 @@ tbody tr:hover { background: #fafcff; }
   cursor: pointer;
 }
 
-.browser-workflow-footer > button:last-child {
+.browser-workflow-footer-actions > button {
   border-color: #0a54e8;
   background: #0a54e8;
   color: #fff;
 }
 
-.browser-workflow-footer > button:disabled {
+.browser-workflow-footer > button:disabled,
+.browser-workflow-footer-actions > button:disabled {
   border-color: #dce1e9;
   background: #e9edf3;
   color: #9aa5b7;
   cursor: not-allowed;
+}
+
+.document-review-table .missing-pdf-badge {
+  display: inline-flex;
+  margin-top: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #f8e7d4;
+  color: #8a4b12;
+  font-size: 0.72rem;
+  font-weight: 600;
 }
 
 .processing-page {

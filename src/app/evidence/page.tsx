@@ -49,7 +49,7 @@ export default async function EvidencePage({
 }: {
   searchParams: Promise<SearchParams>;
 }) {
-  if (!localCorpusEnabled()) notFound();
+  if (!localCorpusEnabled()) redirect("/projects");
   const params = await searchParams;
   const documentId = value(params, "documentId");
   const documentRevisionId = value(params, "documentRevisionId");

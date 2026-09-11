@@ -437,7 +437,7 @@ export function ProcessingPage({ projectId }: { projectId: string }) {
           </p>
           <div>
             <Link href={`/projects/${projectId}/lv-vergleich`}>Bisherigen Vergleich öffnen</Link>
-            <Link href={`/projects/${projectId}/documents`}>Zurück zu Dokumenten</Link>
+            <Link href={`/projects/${projectId}/documents/review`}>Zurück zu Dokumenten</Link>
             <button
               onClick={() =>
                 void start(true).catch((error) => {
