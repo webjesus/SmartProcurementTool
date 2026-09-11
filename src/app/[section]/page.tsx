@@ -1,6 +1,6 @@
 import { notFound, redirect } from "next/navigation";
 import { SectionView, type SectionName } from "@/components/section-view";
-import { isBrowserLocal } from "@/services/deployment-profile";
+import { localCorpusEnabled } from "@/services/deployment-profile";
 
 const sectionNames = [
   "dokumente",
@@ -23,10 +23,10 @@ export default async function SectionPage({
 }) {
   const { section } = await params;
   if (!sectionNames.some((candidate) => candidate === section)) notFound();
-  // The browser/Vercel product uses the project-scoped LV workspace. Keeping
-  // the old global comparison page reachable made a production deployment
-  // appear to show the previous interface when users opened /lv-vergleich.
-  if (section === "lv-vergleich" && isBrowserLocal()) {
+  // Demo /lv-vergleich rendered the legacy synthetic table whenever corpus
+  // data was missing. That made the approved three-pane workspace look like it
+  // had snapped back to the previous interface.
+  if (section === "lv-vergleich" && !localCorpusEnabled()) {
     redirect("/projects");
   }
   if (

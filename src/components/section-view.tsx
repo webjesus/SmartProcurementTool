@@ -1838,11 +1838,15 @@ function RealComparison({
 function Comparison() {
   const { pilot, reload } = usePilotState();
   if (pilot === undefined) return <div className="panel loading-panel">Quelldaten werden geladen…</div>;
-  return pilot === null ? (
-    <SyntheticComparison />
-  ) : (
-    <LvComparisonPage pilot={pilot} reload={reload} />
-  );
+  if (pilot === null) {
+    return (
+      <div className="panel" data-lv-design="v2">
+        <p>Kein LV-Projekt geladen.</p>
+        <Link href="/projects">Zu den Projekten</Link>
+      </div>
+    );
+  }
+  return <LvComparisonPage pilot={pilot} reload={reload} />;
 }
 
 function RealDecisions({

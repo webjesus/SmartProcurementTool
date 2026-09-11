@@ -16,7 +16,8 @@ describe("LV v2 design lock", () => {
 
   it("does not keep a runtime switch back to the legacy comparison UI", () => {
     expect(sectionView).not.toContain("NEXT_PUBLIC_LEGACY_LV_UI");
-    expect(sectionView).toMatch(/return pilot === null \?[\s\S]*<LvComparisonPage/);
+    expect(sectionView).not.toMatch(/pilot === null \?[\s\S]*<SyntheticComparison/);
+    expect(sectionView).toContain("<LvComparisonPage");
   });
 
   it("loads v2 styles after globals so the approved layout can override leftovers", () => {
@@ -44,5 +45,11 @@ describe("LV v2 design lock", () => {
     expect(v2Css).toMatch(
       /html body \.lv-workspace\[data-lv-design="v2"\]\.lv-workspace--quiet \.lv-three-pane\.lv-two-pane[\s\S]*grid-template-columns:\s*228px/
     );
+  });
+
+  it("routes the global comparison URL away from the synthetic table", () => {
+    const page = readFileSync("src/app/[section]/page.tsx", "utf8");
+    expect(page).toContain("localCorpusEnabled()");
+    expect(page).toContain('redirect("/projects")');
   });
 });

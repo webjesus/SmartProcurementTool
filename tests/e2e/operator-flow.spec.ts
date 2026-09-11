@@ -58,8 +58,8 @@ test("from overview to export", async ({ page }, testInfo) => {
   await expect(page.getByRole("button", { name: "Bestätigen" }).first()).toBeVisible();
 
   await page.goto("/lv-vergleich");
-  await expect(page.getByRole("heading", { name: "Belastbarer Angebotsvergleich" })).toBeVisible();
-  await page.getByText("2.3.10", { exact: true }).first().click();
+  await expect(page).toHaveURL(/\/projects(?:\/|$)/u);
+  await expect(page.getByRole("heading", { name: "Projekte" })).toBeVisible();
 
   await page.goto("/entscheidungen");
   await expect(
